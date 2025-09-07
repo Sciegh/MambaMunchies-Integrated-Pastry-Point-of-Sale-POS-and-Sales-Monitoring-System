@@ -1,0 +1,29 @@
+# Ignore Visual Studio / VSCode stuff
+.vs/
+.vscode/
+
+# Python junk
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.env
+venv/
+.venv/
+
+# IDE/editor
+.vscode/
+.idea/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Local data
+*.db
+*.sqlite
+*.sqlite3
+
+# Logs/exports
+*.log
+*.csv

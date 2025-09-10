@@ -1,19 +1,44 @@
 ﻿import os
+import io
 import csv
+import math
+import base64
 import hashlib
 import sqlite3
 from datetime import datetime, timedelta
-from PIL import Image, ImageTk
+from PIL import Image, ImageTk, ImageDraw, ImageFont
 
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
 
-# -------------------- Paths --------------------
+# -------------------- Paths & Constants --------------------
 BASE_DIR = r"E:\Downloads\3rdyr1stsem\Elective 3\MambaMunchies Integrated Pastry Point of Sale (POS) and Sales Monitoring System"
 os.makedirs(BASE_DIR, exist_ok=True)
-DB_PATH = os.path.join(BASE_DIR, "pastry_inventory.db")
+DB_PATH = os.path.join(BASE_DIR, "pastry_inventory.db") 
+DB_FILE = "pastry_pos.db"
+IMAGES_DIR = os.path.join(BASE_DIR, "Images")
+os.makedirs(IMAGES_DIR, exist_ok=True)
+RECEIPTS_DIR = os.path.join(BASE_DIR, "Receipts")
+os.makedirs(RECEIPTS_DIR, exist_ok=True)
+EXPORTS_DIR = os.path.join(BASE_DIR, "Exports")
+os.makedirs(EXPORTS_DIR, exist_ok=True)
 
 LOW_STOCK_THRESHOLD = 5
+POS_GRID_COLS = 5
+CARD_IMG_SIZE = (120, 90)
+LOGO_SIZE = (36, 36)
+
+# Pastel palette
+COL_BG = "#fff7f8"  # background
+COL_ACCENT = "#ff7aa2"  # primary pink
+COL_ACCENT_DARK = "#e0668b"
+COL_ACCENT_LIGHT = "#ffd1df"
+COL_OK = "#76d39e"
+COL_WARN = "#ffd97a"
+COL_BAD = "#ffb3c1"
+COL_TEXT = "#3a3a3a"
+
+MAX_QTY_PER_PRODUCT = 10
 
 # -------------------- Category -> Name list --------------------
 CATEGORY_ITEMS = {
@@ -27,30 +52,85 @@ CATEGORY_ITEMS = {
     "Other": ["Brownie", "Cupcake", "Macaron"],
 }
 
-# -------------------- Helpers --------------------
-def db_connect():   # Eto yung function na mag-oopen ng connection sa database (SQLite).
-    return sqlite3.connect(DB_PATH) # Pag kailangan natin mag run ng SQL commands, dito dadaan.
+# -------------------- Helper utils --------------------
+def db_connect():
+    return sqlite3.connect(DB_PATH)
 
-def hash_pw(pw: str) -> str: # Simple function to hash a password gamit sha256.
-    import hashlib
+def hash_pw(pw: str) -> str:
     return hashlib.sha256(pw.encode("utf-8")).hexdigest()
 
-def format_money(x): # Eto naman pang-format ng presyo/pera.
-    try: # Kapag may error or walang value, default sya sa ₱0.00
-        return f"₱{float(x):,.2f}"
-    except:
+def money(v: float) -> str:
+    try:
+        return f"₱{float(v):,.2f}"
+    except Exception:
         return "₱0.00"
 
 def now_iso():
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-# -------------------- DB Init & Seed --------------------
-def init_db(): # Time Stamp
+ICON_CACHE = {}
+
+def draw_icon(shape: str, size=(28, 28), fill=COL_ACCENT, stroke=COL_TEXT) -> ImageTk.PhotoImage:
+    key = (shape, size)
+    if key in ICON_CACHE:
+        return ICON_CACHE[key]
+    w, h = size
+    img = Image.new("RGBA", size, (0, 0, 0, 0))
+    d = ImageDraw.Draw(img)
+    if shape == "cart":
+        # cart body
+        d.rectangle([6, 10, w-6, h-10], outline=stroke, width=2)
+        # handle
+        d.line([6, 10, 12, 6], fill=stroke, width=2)
+        # wheels
+        d.ellipse([8, h-8, 12, h-4], outline=stroke, width=2, fill=fill)
+        d.ellipse([w-12, h-8, w-8, h-4], outline=stroke, width=2, fill=fill)
+    elif shape == "inventory":
+        d.rectangle([6, 6, w-6, h-6], outline=stroke, width=2)
+        d.line([6, (h//2), w-6, (h//2)], fill=stroke, width=2)
+        d.line([w//2, 6, w//2, h-6], fill=stroke, width=2)
+    elif shape == "report":
+        d.rectangle([6, 6, w-10, h-6], outline=stroke, width=2)
+        d.line([w-10, 10, w-6, 6], fill=stroke, width=2)
+        d.line([w-10, 14, w-6, 10], fill=stroke, width=2)
+        # bars
+        d.rectangle([10, h-10, 14, h-6], fill=fill)
+        d.rectangle([16, h-14, 20, h-6], fill=fill)
+        d.rectangle([22, h-18, 26, h-6], fill=fill)
+    elif shape == "users":
+        d.ellipse([8, 6, 20, 18], outline=stroke, width=2, fill=fill)
+        d.rectangle([8, 18, 22, h-6], outline=stroke, width=2)
+    elif shape == "logout":
+        d.rectangle([8, 6, 18, h-6], outline=stroke, width=2)
+        d.polygon([(18, h//2 - 6), (26, h//2), (18, h//2 + 6)], outline=stroke, fill=fill)
+        d.line([14, h//2, 22, h//2], fill=stroke, width=2)
+    elif shape == "search":
+        d.ellipse([6,6,18,18], outline=stroke, width=2)
+        d.line([18,18,24,24], fill=stroke, width=2)
+    elif shape == "plus":
+        d.line([w//2, 6, w//2, h-6], fill=stroke, width=3)
+        d.line([6, h//2, w-6, h//2], fill=stroke, width=3)
+    elif shape == "minus":
+        d.line([6, h//2, w-6, h//2], fill=stroke, width=3)
+    elif shape == "bake":
+        # cute cupcake
+        d.polygon([(6, h-8), (w-6, h-8), (w-10, h-4), (10, h-4)], fill=COL_ACCENT)
+        d.ellipse([8, 6, w-8, h-10], fill=COL_ACCENT_LIGHT, outline=stroke)
+        d.ellipse([w//2-2, 4, w//2+2, 8], fill=COL_OK)
+    else:
+        d.rectangle([4,4,w-4,h-4], outline=stroke, width=2)
+    ph = ImageTk.PhotoImage(img)
+    ICON_CACHE[key] = ph
+    return ph
+
+# -------------------- DB setup/upgrade --------------------
+def init_db():
     con = db_connect()
     cur = con.cursor()
 
     # Users
-    cur.execute("""
+    cur.execute(
+        """
         CREATE TABLE IF NOT EXISTS users (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             username TEXT UNIQUE NOT NULL,
@@ -58,10 +138,12 @@ def init_db(): # Time Stamp
             role TEXT NOT NULL CHECK (role IN ('Admin','Staff')),
             created_at TEXT DEFAULT CURRENT_TIMESTAMP
         )
-    """)
+        """
+    )
 
     # Pastries
-    cur.execute("""
+    cur.execute(
+        """
         CREATE TABLE IF NOT EXISTS pastries (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             name TEXT NOT NULL,
@@ -71,10 +153,12 @@ def init_db(): # Time Stamp
             date_added TEXT DEFAULT CURRENT_TIMESTAMP,
             last_updated TEXT DEFAULT CURRENT_TIMESTAMP
         )
-    """)
+        """
+    )
 
-    # Sales
-    cur.execute("""
+    # Legacy Sales (line items without receipt grouping)
+    cur.execute(
+        """
         CREATE TABLE IF NOT EXISTS sales (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             pastry_id INTEGER NOT NULL,
@@ -85,719 +169,865 @@ def init_db(): # Time Stamp
             staff_username TEXT NOT NULL,
             FOREIGN KEY (pastry_id) REFERENCES pastries(id)
         )
-    """)
+        """
+    )
 
-    # Seed default admin if none exists
+    # New: Receipts (transactions)
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS receipts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            receipt_no INTEGER UNIQUE,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            staff_username TEXT NOT NULL,
+            customer_name TEXT,
+            subtotal REAL NOT NULL,
+            discount REAL NOT NULL,
+            tax REAL NOT NULL,
+            total REAL NOT NULL,
+            tendered REAL NOT NULL,
+            change REAL NOT NULL
+        )
+        """
+    )
+
+    # New: Receipt items
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS receipt_items (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            receipt_id INTEGER NOT NULL,
+            pastry_id INTEGER NOT NULL,
+            name TEXT NOT NULL,
+            unit_price REAL NOT NULL,
+            qty INTEGER NOT NULL,
+            line_total REAL NOT NULL,
+            FOREIGN KEY (receipt_id) REFERENCES receipts(id),
+            FOREIGN KEY (pastry_id) REFERENCES pastries(id)
+        )
+        """
+    )
+
+    # Seed admin
     cur.execute("SELECT COUNT(*) FROM users")
-    count = cur.fetchone()[0]
-    if count == 0:
+    if cur.fetchone()[0] == 0:
         cur.execute(
-            "INSERT INTO users (username, password_hash, role) VALUES (?, ?, ?)",
+            "INSERT INTO users (username, password_hash, role) VALUES (?,?,?)",
             ("admin", hash_pw("admin123"), "Admin"),
         )
 
     con.commit()
     con.close()
 
+# -------------------- Product image helpers --------------------
+FONT_CACHE = None
+
+def get_font(size=16):
+    global FONT_CACHE
+    try:
+        if FONT_CACHE is None:
+            FONT_CACHE = ImageFont.truetype("arial.ttf", size)
+        return ImageFont.truetype("arial.ttf", size)
+    except Exception:
+        # Fallback font
+        return ImageFont.load_default()
+
+def load_product_image(name: str) -> ImageTk.PhotoImage:
+    # Try PNG/JPG in IMAGES_DIR
+    for ext in (".png", ".jpg", ".jpeg"):
+        fp = os.path.join(IMAGES_DIR, name + ext)
+        if os.path.exists(fp):
+            try:
+                img = Image.open(fp).convert("RGBA")
+                img = img.resize(CARD_IMG_SIZE, Image.LANCZOS)
+                return ImageTk.PhotoImage(img)
+            except Exception:
+                pass
+    # else make a pastel placeholder with initials
+    bg = COL_ACCENT_LIGHT
+    img = Image.new("RGBA", CARD_IMG_SIZE, bg)
+    d = ImageDraw.Draw(img)
+    initials = "".join([w[0] for w in name.split()[:2]]).upper() or "P"
+    f = get_font(28)
+    tw, th = d.textsize(initials, font=f)
+    d.text(((CARD_IMG_SIZE[0]-tw)//2, (CARD_IMG_SIZE[1]-th)//2), initials, fill=COL_TEXT, font=f)
+    # cupcake corner
+    d.ellipse([4,4,22,22], fill=COL_ACCENT)
+    return ImageTk.PhotoImage(img)
+
+# -------------------- Styled ttk --------------------
+def style_app(root: tk.Tk):
+    style = ttk.Style(root)
+    try:
+        style.theme_use("clam")
+    except Exception:
+        pass
+
+    root.configure(bg=COL_BG)
+    style.configure("TFrame", background=COL_BG)
+    style.configure("TLabelframe", background=COL_BG, relief="groove")
+    style.configure("TLabelframe.Label", background=COL_BG, foreground=COL_TEXT, font=("Segoe UI", 11, "bold"))
+    style.configure("TLabel", background=COL_BG, foreground=COL_TEXT, font=("Segoe UI", 10))
+
+    style.configure(
+        "Accent.TButton",
+        font=("Segoe UI", 10, "bold"),
+        background=COL_ACCENT,
+        foreground="white",
+        padding=8,
+        borderwidth=0,
+        focusthickness=3,
+        focuscolor=COL_ACCENT_LIGHT,
+    )
+    style.map(
+        "Accent.TButton",
+        background=[("active", COL_ACCENT_DARK)],
+    )
+
+    style.configure("Soft.TButton", font=("Segoe UI", 10), padding=6)
+
+    style.configure(
+        "Treeview",
+        background="white",
+        foreground=COL_TEXT,
+        fieldbackground="white",
+        rowheight=26,
+        font=("Segoe UI", 10),
+    )
+    style.configure("Treeview.Heading", font=("Segoe UI", 10, "bold"))
+
+    style.configure("TEntry", padding=4)
+    style.configure("TCombobox", padding=4)
+
 # -------------------- App --------------------
 class App(tk.Tk):
     def __init__(self, username, role):
         super().__init__()
-        self.title("MambaMunchies")
-        self.geometry("980x640")
-        self.minsize(1920, 1080)
-
         self.username = username
         self.role = role
+
+        self.title("🍰 MambaMunchies")
+        self.geometry("1200x780")
+        self.minsize(1920, 1080)
+
+        style_app(self)
 
         # Top bar
         top = ttk.Frame(self, padding=10)
         top.pack(side="top", fill="x")
-        ttk.Label(
-            top,
-            text=f"Logged in as: {self.username} ({self.role})",
-            font=("Segoe UI", 10, "bold")
-        ).pack(side="left")
-        ttk.Button(top, text="Logout", command=self.logout).pack(side="right", padx=5)
+        logo_img = Image.open("logo.jpg").resize((40, 40))
+        self.logo_photo = ImageTk.PhotoImage(logo_img)
+        ttk.Label(top, image=self.logo_photo, text="  MambaMunchies Bakery POS", compound="left", font=("Segoe UI", 16, "bold")).pack(side="left")
 
-        # Tabs
+        ttk.Label(top, text=f"Signed in: {self.username} ({self.role})", font=("Segoe UI", 10, "bold")).pack(side="right")
+        ttk.Button(top, text="Logout", style="Accent.TButton", command=self.logout).pack(side="right", padx=8)
+
+        # Tabs with icons
         self.nb = ttk.Notebook(self)
         self.nb.pack(fill="both", expand=True, padx=10, pady=10)
 
         self.inventory_tab = ttk.Frame(self.nb)
-        self.sales_tab = ttk.Frame(self.nb)
+        self.pos_tab = ttk.Frame(self.nb)
         self.reports_tab = ttk.Frame(self.nb)
-        self.nb.add(self.inventory_tab, text="Inventory")
-        self.nb.add(self.sales_tab, text="Sales")
-        self.nb.add(self.reports_tab, text="Reports")
-
+        self.nb.add(self.pos_tab, text="  POS  ")
+        self.nb.add(self.inventory_tab, text="  Inventory  ")
+        self.nb.add(self.reports_tab, text="  Reports  ")
         if self.role == "Admin":
             self.users_tab = ttk.Frame(self.nb)
-            self.nb.add(self.users_tab, text="Users")
+            self.nb.add(self.users_tab, text="  Users  ")
 
+        self.build_pos_tab()
         self.build_inventory_tab()
-        self.build_sales_tab()
         self.build_reports_tab()
         if self.role == "Admin":
             self.build_users_tab()
 
+        # Load
         self.load_inventory()
-        self.refresh_sales_dropdown()
+        self.refresh_catalog()
         self.refresh_reports()
+
+        # Shortcuts
+        self.bind("<Control-n>", lambda e: self.clear_cart())
+        self.bind("<Control-p>", lambda e: self.charge())
+        self.bind("<F5>", lambda e: self.refresh_catalog())
 
     def logout(self):
         self.destroy()
         LoginWindow()
 
-    # ---------------- Inventory ----------------
+    # ---------------- POS Tab ----------------
+    def build_pos_tab(self):
+        frm = self.pos_tab
+
+        # Left: catalog; Right: cart
+        left = ttk.Frame(frm)
+        left.pack(side="left", fill="both", expand=True, padx=(0,8))
+        right = ttk.Frame(frm)
+        right.pack(side="right", fill="y")
+
+        # Filters/search
+        filt = ttk.Labelframe(left, text="🛒 Catalog")
+        filt.pack(side="top", fill="x", padx=2, pady=2)
+        self.pos_cat_var = tk.StringVar(value="All")
+        cats = ["All"] + list(CATEGORY_ITEMS.keys())
+        ttk.Label(filt, text="Category:").grid(row=0, column=0, padx=6, pady=6, sticky="w")
+        ttk.Combobox(filt, textvariable=self.pos_cat_var, values=cats, state="readonly", width=16).grid(row=0, column=1, padx=6, pady=6)
+
+        self.pos_search_var = tk.StringVar()
+        ttk.Label(filt, text="Search:").grid(row=0, column=2, padx=6)
+        ttk.Entry(filt, textvariable=self.pos_search_var, width=26).grid(row=0, column=3, padx=6)
+        ttk.Button(filt, text="Find", style="Soft.TButton", command=self.refresh_catalog).grid(row=0, column=4, padx=6)
+        ttk.Button(filt, text="Show All", style="Soft.TButton", command=lambda: [self.pos_cat_var.set("All"), self.pos_search_var.set(""), self.refresh_catalog()]).grid(row=0, column=5, padx=6)
+
+        # Catalog grid canvas (scrollable)
+        self.catalog_canvas = tk.Canvas(left, bg=COL_BG, highlightthickness=0)
+        self.catalog_frame = ttk.Frame(self.catalog_canvas)
+        self.catalog_scroll = ttk.Scrollbar(left, orient="vertical", command=self.catalog_canvas.yview)
+        self.catalog_canvas.configure(yscrollcommand=self.catalog_scroll.set)
+        self.catalog_scroll.pack(side="right", fill="y")
+        self.catalog_canvas.pack(side="left", fill="both", expand=True)
+        self.catalog_canvas.create_window((0,0), window=self.catalog_frame, anchor="nw")
+        self.catalog_frame.bind("<Configure>", lambda e: self.catalog_canvas.configure(scrollregion=self.catalog_canvas.bbox("all")))
+
+        # Right: Cart
+        cart_box = ttk.Labelframe(right, text="🧾 Cart")
+        cart_box.pack(fill="y", padx=2, pady=2)
+
+        cols = ("Item", "Price", "Qty", "Total")
+        self.cart_tree = ttk.Treeview(cart_box, columns=cols, show="headings", height=18)
+        for c in cols:
+            self.cart_tree.heading(c, text=c)
+        self.cart_tree.column("Item", width=180)
+        self.cart_tree.column("Price", width=80, anchor="e")
+        self.cart_tree.column("Qty", width=60, anchor="center")
+        self.cart_tree.column("Total", width=100, anchor="e")
+        self.cart_tree.pack(padx=6, pady=6)
+
+        # Cart buttons
+        btns = ttk.Frame(cart_box)
+        btns.pack(fill="x", padx=6)
+        ttk.Button(btns, text="+ Qty", style="Soft.TButton", command=self.cart_inc).pack(side="left", padx=3)
+        ttk.Button(btns, text="- Qty", style="Soft.TButton", command=self.cart_dec).pack(side="left", padx=3)
+        ttk.Button(btns, text="Remove", style="Soft.TButton", command=self.cart_remove).pack(side="left", padx=3)
+        ttk.Button(btns, text="Clear Cart (Ctrl+N)", style="Soft.TButton", command=self.clear_cart).pack(side="right", padx=3)
+
+        # Totals panel
+        self.totals_frame = ttk.Frame(cart_box)
+        self.totals_frame.pack(fill="x", padx=8, pady=6)
+
+        self.subtotal_var = tk.DoubleVar(value=0.0)
+        self.discount_var = tk.DoubleVar(value=0.0)
+        self.tax_var = tk.DoubleVar(value=0.0)  # percent
+        self.total_var = tk.DoubleVar(value=0.0)
+        self.tender_var = tk.DoubleVar(value=0.0)
+        self.change_var = tk.DoubleVar(value=0.0)
+        self.customer_var = tk.StringVar()
+
+        r = 0
+        ttk.Label(self.totals_frame, text="Customer:").grid(row=r, column=0, sticky="e", padx=4, pady=2)
+        ttk.Entry(self.totals_frame, textvariable=self.customer_var, width=22).grid(row=r, column=1, padx=4, pady=2, columnspan=3, sticky="w")
+        r += 1
+        ttk.Label(self.totals_frame, text="Subtotal:").grid(row=r, column=0, sticky="e", padx=4, pady=2)
+        ttk.Label(self.totals_frame, textvariable=self.subtotal_var, name="subtotal_lbl").grid(row=r, column=1, sticky="w")
+        r += 1
+        ttk.Label(self.totals_frame, text="Discount (₱):").grid(row=r, column=0, sticky="e", padx=4, pady=2)
+        ttk.Entry(self.totals_frame, textvariable=self.discount_var, width=10).grid(row=r, column=1, sticky="w")
+        ttk.Label(self.totals_frame, text="Tax (%):").grid(row=r, column=2, sticky="e", padx=4)
+        ttk.Entry(self.totals_frame, textvariable=self.tax_var, width=6).grid(row=r, column=3, sticky="w")
+        r += 1
+        ttk.Label(self.totals_frame, text="Total:").grid(row=r, column=0, sticky="e", padx=4, pady=2)
+        ttk.Label(self.totals_frame, textvariable=self.total_var, name="total_lbl", font=("Segoe UI", 14, "bold")).grid(row=r, column=1, sticky="w")
+        r += 1
+        ttk.Label(self.totals_frame, text="Tendered:").grid(row=r, column=0, sticky="e", padx=4, pady=2)
+        ttk.Entry(self.totals_frame, textvariable=self.tender_var, width=10).grid(row=r, column=1, sticky="w")
+        ttk.Label(self.totals_frame, text="Change:").grid(row=r, column=2, sticky="e", padx=4)
+        ttk.Label(self.totals_frame, textvariable=self.change_var, name="change_lbl").grid(row=r, column=3, sticky="w")
+
+        # Action buttons
+        act = ttk.Frame(cart_box)
+        act.pack(fill="x", padx=6, pady=6)
+        ttk.Button(act, text="Charge (Ctrl+P)", style="Accent.TButton", command=self.charge).pack(side="left", padx=4)
+        ttk.Button(act, text="Print Last Receipt", style="Soft.TButton", command=self.print_last_receipt).pack(side="left", padx=4)
+
+        self.update_totals()
+
+    def refresh_catalog(self):
+        # Clear current grid
+        for w in self.catalog_frame.winfo_children():
+            w.destroy()
+
+        # Query pastries
+        con = db_connect(); cur = con.cursor()
+        cur.execute("SELECT id, name, category, price, quantity FROM pastries ORDER BY name ASC")
+        rows = cur.fetchall()
+        con.close()
+
+        # Apply filters
+        cat = self.pos_cat_var.get()
+        q = self.pos_search_var.get().strip().lower()
+        items = []
+        for pid, name, category, price, qty in rows:
+            if cat != "All" and category != cat:
+                continue
+            if q and q not in name.lower():
+                continue
+            items.append((pid, name, category, price, qty))
+
+        # Build cards
+        r = c = 0
+        self._card_images_keep = []
+        for pid, name, category, price, qty in items:
+            card = ttk.Frame(self.catalog_frame, padding=6)
+            card.grid(row=r, column=c, sticky="nsew", padx=6, pady=6)
+            # image
+            img = load_product_image(name)
+            self._card_images_keep.append(img)
+            img_lbl = ttk.Label(card, image=img)
+            img_lbl.pack()
+            # name + price
+            name_lbl = ttk.Label(card, text=name, font=("Segoe UI", 10, "bold"))
+            name_lbl.pack()
+            price_lbl = ttk.Label(card, text=money(price))
+            price_lbl.pack()
+            # stock badge
+            if qty < LOW_STOCK_THRESHOLD:
+                ttk.Label(card, text=f"Low stock: {qty}", foreground="#8a1c1c").pack()
+            # add buttons
+            bt_frame = ttk.Frame(card)
+            bt_frame.pack(pady=4)
+            ttk.Button(bt_frame, text="Add 1", style="Soft.TButton", command=lambda _id=pid: self.add_to_cart(_id, 1)).pack(side="left", padx=2)
+            ttk.Button(bt_frame, text="Add 5", style="Soft.TButton", command=lambda _id=pid: self.add_to_cart(_id, 5)).pack(side="left", padx=2)
+
+            c += 1
+            if c >= POS_GRID_COLS:
+                c = 0
+                r += 1
+
+    # Cart operations
+    def add_to_cart(self, pastry_id: int, qty: int):
+        # Fetch product
+        con = db_connect(); cur = con.cursor()
+        cur.execute("SELECT name, price, quantity FROM pastries WHERE id=?", (pastry_id,))
+        row = cur.fetchone()
+        con.close()
+        if not row:
+            return
+        name, price, stock = row
+
+        # check if already in cart
+        found = None
+        for iid in self.cart_tree.get_children():
+            vals = self.cart_tree.item(iid, "values")
+            if vals and vals[0] == name:
+                found = iid; break
+        if found:
+            cur_qty = int(self.cart_tree.item(found, "values")[2])
+            new_qty = cur_qty + qty
+            if new_qty > MAX_QTY_PER_PRODUCT:
+                messagebox.showwarning("Quantity limit", f"Cannot add more than {MAX_QTY_PER_PRODUCT} units per product.")
+                return
+            if new_qty > stock:
+                messagebox.showwarning("Stock", f"Not enough stock for {name}. Available: {stock}.")
+                return
+            self.cart_tree.item(found, values=(name, f"{price:.2f}", new_qty, f"{price*new_qty:.2f}"))
+        else:
+            if qty > MAX_QTY_PER_PRODUCT:
+                messagebox.showwarning("Quantity limit", f"Cannot add more than {MAX_QTY_PER_PRODUCT} units per product.")
+                return
+            if qty > stock:
+                messagebox.showwarning("Stock", f"Not enough stock for {name}. Available: {stock}.")
+                return
+            self.cart_tree.insert("", "end", values=(name, f"{price:.2f}", qty, f"{price*qty:.2f}"), tags=(str(pastry_id),))
+        self.update_totals()
+
+    def cart_inc(self):
+        sel = self.cart_tree.selection()
+        if not sel: return
+        iid = sel[0]
+        name, price_s, qty_s, total_s = self.cart_tree.item(iid, "values")
+        price = float(price_s)
+        qty = int(qty_s) + 1
+        if qty > MAX_QTY_PER_PRODUCT:
+            messagebox.showwarning("Quantity limit", f"Cannot have more than {MAX_QTY_PER_PRODUCT} units per product.")
+            return
+        # stock check
+        con = db_connect(); cur = con.cursor()
+        cur.execute("SELECT quantity FROM pastries WHERE name=?", (name,))
+        stock = cur.fetchone()[0]
+        con.close()
+        if qty > stock:
+            messagebox.showwarning("Stock", f"Not enough stock for {name}. Available: {stock}.")
+            return
+        self.cart_tree.item(iid, values=(name, f"{price:.2f}", qty, f"{price*qty:.2f}"))
+        self.update_totals()
+
+    def cart_dec(self):
+        sel = self.cart_tree.selection()
+        if not sel: return
+        iid = sel[0]
+        name, price_s, qty_s, total_s = self.cart_tree.item(iid, "values")
+        price = float(price_s)
+        qty = int(qty_s) - 1
+        if qty <= 0:
+            self.cart_tree.delete(iid)
+        else:
+            self.cart_tree.item(iid, values=(name, f"{price:.2f}", qty, f"{price*qty:.2f}"))
+        self.update_totals()
+
+    def cart_remove(self):
+        sel = self.cart_tree.selection()
+        if not sel: return
+        self.cart_tree.delete(sel[0])
+        self.update_totals()
+
+    def clear_cart(self):
+        self.cart_tree.delete(*self.cart_tree.get_children())
+        self.discount_var.set(0.0)
+        self.tax_var.set(0.0)
+        self.tender_var.set(0.0)
+        self.change_var.set(0.0)
+        self.customer_var.set("")
+        self.update_totals()
+
+    def update_totals(self):
+        subtotal = 0.0
+        for iid in self.cart_tree.get_children():
+            vals = self.cart_tree.item(iid, "values")
+            subtotal += float(vals[1]) * int(vals[2])
+        discount = max(0.0, float(self.discount_var.get() or 0.0))
+        tax_pct = max(0.0, float(self.tax_var.get() or 0.0))
+        taxed = max(0.0, (subtotal - discount)) * (tax_pct/100.0)
+        total = max(0.0, subtotal - discount + taxed)
+        tender = float(self.tender_var.get() or 0.0)
+        change = max(0.0, tender - total)
+        self.subtotal_var.set(subtotal)
+        self.total_var.set(total)
+        self.change_var.set(change)
+        # Update labels by widget name
+        self.totals_frame.nametowidget("subtotal_lbl").configure(text=money(subtotal))
+        self.totals_frame.nametowidget("total_lbl").configure(text=money(total))
+        self.totals_frame.nametowidget("change_lbl").configure(text=money(change))
+
+    def next_receipt_no(self, cur):
+        cur.execute("SELECT COALESCE(MAX(receipt_no), 1000) FROM receipts")
+        return (cur.fetchone()[0] or 1000) + 1
+
+    def charge(self):
+        # Gather cart lines
+        lines = []
+        for iid in self.cart_tree.get_children():
+            name, price_s, qty_s, total_s = self.cart_tree.item(iid, "values")
+            qty = int(qty_s)
+            price = float(price_s)
+            lines.append((name, price, qty))
+        if not lines:
+            messagebox.showwarning("Cart", "Cart is empty.")
+            return
+        subtotal = self.subtotal_var.get()
+        discount = float(self.discount_var.get() or 0.0)
+        tax = float(self.tax_var.get() or 0.0)
+        total = self.total_var.get()
+        tender = float(self.tender_var.get() or 0.0)
+        if tender + 1e-6 < total:
+            messagebox.showwarning("Payment", "Tendered amount is less than total.")
+            return
+        change = tender - total
+
+        con = db_connect(); cur = con.cursor()
+        try:
+            # Map item names to pastry IDs and stock checks
+            items = []
+            for name, price, qty in lines:
+                cur.execute("SELECT id, quantity FROM pastries WHERE name=?", (name,))
+                row = cur.fetchone()
+                if not row:
+                    raise Exception(f"Item not found: {name}")
+                pid, stock = row
+                if qty > stock:
+                    raise Exception(f"Not enough stock for {name}. Available: {stock}.")
+                items.append((pid, name, price, qty))
+
+            # Create receipt
+            receipt_no = self.next_receipt_no(cur)
+            cur.execute(
+                """
+                INSERT INTO receipts (receipt_no, created_at, staff_username, customer_name,
+                                      subtotal, discount, tax, total, tendered, change)
+                VALUES (?,?,?,?,?,?,?,?,?,?)
+                """,
+                (
+                    receipt_no,
+                    now_iso(),
+                    self.username,
+                    self.customer_var.get().strip() or None,
+                    subtotal,
+                    discount,
+                    tax,
+                    total,
+                    tender,
+                    change,
+                ),
+            )
+            rid = cur.lastrowid
+
+            # Create items + update stock + legacy sales rows
+            for pid, name, price, qty in items:
+                line_total = price * qty
+                cur.execute(
+                    "INSERT INTO receipt_items (receipt_id, pastry_id, name, unit_price, qty, line_total) VALUES (?,?,?,?,?,?)",
+                    (rid, pid, name, price, qty, line_total),
+                )
+                cur.execute(
+                    "UPDATE pastries SET quantity = quantity - ?, last_updated=? WHERE id=?",
+                    (qty, now_iso(), pid),
+                )
+                # legacy
+                cur.execute(
+                    "INSERT INTO sales (pastry_id, qty, unit_price, total, sale_time, staff_username) VALUES (?,?,?,?,?,?)",
+                    (pid, qty, price, line_total, now_iso(), self.username),
+                )
+
+            con.commit()
+        except Exception as e:
+            con.rollback()
+            con.close()
+            messagebox.showerror("Charge failed", str(e))
+            return
+        con.close()
+
+        self.last_receipt_no = receipt_no
+        self.load_inventory()
+        self.refresh_catalog()
+        self.refresh_reports()
+        self.clear_cart()
+        messagebox.showinfo("Payment complete", f"Receipt #{receipt_no}\nChange: {money(change)}")
+
+        # Auto print
+        self.save_receipt_to_txt(receipt_no)
+
+    def print_last_receipt(self):
+        if not hasattr(self, "last_receipt_no"):
+            messagebox.showinfo("Receipt", "No receipt yet.")
+            return
+        self.save_receipt_to_txt(self.last_receipt_no)
+
+    def save_receipt_to_txt(self, receipt_no: int):
+        con = db_connect(); cur = con.cursor()
+        cur.execute("SELECT id, created_at, staff_username, customer_name, subtotal, discount, tax, total, tendered, change FROM receipts WHERE receipt_no=?", (receipt_no,))
+        r = cur.fetchone()
+        if not r:
+            con.close(); return
+        rid, created_at, staff, cust, subtotal, disc, tax, total, tender, change = r
+        cur.execute("SELECT name, unit_price, qty, line_total FROM receipt_items WHERE receipt_id=?", (rid,))
+        items = cur.fetchall()
+        con.close()
+
+        path = os.path.join(RECEIPTS_DIR, f"Receipt_{receipt_no}.txt")
+        with open(path, "w", encoding="utf-8") as f:
+            f.write("MambaMunchies Bakery POS\n")
+            f.write(f"Receipt #: {receipt_no}\n")
+            f.write(f"Date: {created_at}\n")
+            f.write(f"Staff: {staff}\n")
+            if cust:
+                f.write(f"Customer: {cust}\n")
+            f.write("\nItems:\n")
+            for name, up, qty, lt in items:
+                f.write(f" - {name}  x{qty}  @ {money(up)}  = {money(lt)}\n")
+            f.write("\n")
+            f.write(f"Subtotal: {money(subtotal)}\n")
+            f.write(f"Discount: {money(disc)}\n")
+            f.write(f"Tax ({tax:.2f}%): {money(max(0,(subtotal-disc)*tax/100))}\n")
+            f.write(f"TOTAL: {money(total)}\n")
+            f.write(f"Tendered: {money(tender)}\n")
+            f.write(f"Change: {money(change)}\n")
+        messagebox.showinfo("Receipt saved", f"Saved to:\n{path}")
+
+    # ---------------- Inventory (kept from v2, styled) ----------------
     def build_inventory_tab(self):
         frm = self.inventory_tab
+        top = ttk.Frame(frm)
+        top.pack(fill="x", pady=6)
+        ttk.Button(top, text="Add Pastry", style="Accent.TButton", command=self.add_pastry).pack(side="left", padx=3)
+        ttk.Button(top, text="Edit", style="Soft.TButton", command=self.edit_pastry).pack(side="left", padx=3)
+        ttk.Button(top, text="Delete", style="Soft.TButton", command=self.delete_pastry).pack(side="left", padx=3)
+        ttk.Button(top, text="Export CSV", style="Soft.TButton", command=self.export_inventory).pack(side="right", padx=3)
 
-        form = ttk.LabelFrame(frm, text="Pastry Details", padding=10)
-        form.pack(side="top", fill="x", padx=8, pady=8)
-
-        # variables
-        self.name_var = tk.StringVar()
-        self.category_var = tk.StringVar(value="Pastry")
-        self.price_var = tk.StringVar()
-        self.qty_var = tk.StringVar()
-        self.search_var = tk.StringVar()
-
-        # Name (combobox)
-        r = 0
-        ttk.Label(form, text="Name:").grid(row=r, column=0, sticky="w", padx=5, pady=4)
-        self.name_cb = ttk.Combobox(form, textvariable=self.name_var, width=30, state="readonly")
-        self.name_cb.grid(row=r, column=1, padx=5, pady=4)
-
-        # Category (combobox)
-        ttk.Label(form, text="Category:").grid(row=r, column=2, sticky="w", padx=5, pady=4)
-        self.category_cb = ttk.Combobox(
-            form,
-            textvariable=self.category_var,
-            width=18,
-            state="readonly",
-            values=list(CATEGORY_ITEMS.keys())
-        )
-        self.category_cb.grid(row=r, column=3, padx=5, pady=4)
-        # populate names for default category
-        self.update_names_for_category(self.category_var.get())
-        # bind category change -> update names list
-        self.category_cb.bind("<<ComboboxSelected>>", self.on_category_change)
-
-        # Price / Quantity
-        r += 1
-        ttk.Label(form, text="Price:").grid(row=r, column=0, sticky="w", padx=5, pady=4)
-        ttk.Entry(form, textvariable=self.price_var, width=32).grid(row=r, column=1, padx=5, pady=4)
-
-        ttk.Label(form, text="Quantity:").grid(row=r, column=2, sticky="w", padx=5, pady=4)
-        ttk.Entry(form, textvariable=self.qty_var, width=20).grid(row=r, column=3, padx=5, pady=4)
-
-        # Buttons
-        r += 1
-        btns = ttk.Frame(form)
-        btns.grid(row=r, column=0, columnspan=4, pady=6, sticky="w")
-        ttk.Button(btns, text="Add", width=14, command=self.add_pastry).pack(side="left", padx=4)
-        ttk.Button(btns, text="Update", width=14, command=self.update_pastry).pack(side="left", padx=4)
-        ttk.Button(btns, text="Delete", width=14, command=self.delete_pastry).pack(side="left", padx=4)
-        ttk.Button(btns, text="Clear", width=10, command=self.clear_form).pack(side="left", padx=4)
-
-        # Search + Export + Total Value
-        row2 = ttk.Frame(frm)
-        row2.pack(side="top", fill="x", padx=8)
-        ttk.Label(row2, text="Search by name:").pack(side="left")
-        search_entry = ttk.Entry(row2, textvariable=self.search_var, width=30)
-        search_entry.pack(side="left", padx=6)
-        ttk.Button(row2, text="Search", command=self.search_inventory).pack(side="left", padx=4)
-        ttk.Button(row2, text="Show All", command=self.load_inventory).pack(side="left", padx=4)
-        ttk.Button(row2, text="Export CSV", command=self.export_inventory_csv).pack(side="left", padx=12)
-        self.total_value_lbl = ttk.Label(row2, text="Total Inventory Value: ₱0.00")
-        self.total_value_lbl.pack(side="right")
-
-        # Table
-        table_frame = ttk.Frame(frm)
-        table_frame.pack(fill="both", expand=True, padx=8, pady=8)
-
-        cols = ("ID", "Name", "Category", "Price", "Quantity", "Date Added", "Last Updated")
-        self.inv_tree = ttk.Treeview(table_frame, columns=cols, show="headings", height=12)
+        cols = ("ID","Name","Category","Price","Quantity","Last Updated")
+        self.inv_tree = ttk.Treeview(frm, columns=cols, show="headings")
         for c in cols:
             self.inv_tree.heading(c, text=c)
-        self.inv_tree.column("ID", width=50, anchor="center")
-        self.inv_tree.column("Name", width=220)
-        self.inv_tree.column("Category", width=100, anchor="center")
-        self.inv_tree.column("Price", width=90, anchor="e")
-        self.inv_tree.column("Quantity", width=90, anchor="center")
-        self.inv_tree.column("Date Added", width=140, anchor="center")
-        self.inv_tree.column("Last Updated", width=140, anchor="center")
-        self.inv_tree.pack(side="left", fill="both", expand=True)
+        self.inv_tree.column("ID", width=40)
+        self.inv_tree.column("Price", anchor="e")
+        self.inv_tree.column("Quantity", anchor="center")
+        self.inv_tree.pack(fill="both", expand=True, padx=6, pady=6)
 
-        self.inv_tree.tag_configure("low", background="#ffd6d6")
-        self.inv_tree.bind("<<TreeviewSelect>>", self.on_inventory_select)
-
-        vsb = ttk.Scrollbar(table_frame, orient="vertical", command=self.inv_tree.yview)
-        self.inv_tree.configure(yscroll=vsb.set)
-        vsb.pack(side="right", fill="y")
-
-    def on_category_change(self, _event=None):
-        self.update_names_for_category(self.category_var.get())
-
-    def update_names_for_category(self, category):
-        items = CATEGORY_ITEMS.get(category, [])
-        self.name_cb["values"] = items
-        if items:
-            # if current name not in list, set to first
-            current = self.name_var.get()
-            if current not in items:
-                self.name_var.set(items[0])
-        else:
-            self.name_var.set("")
-
-    def clear_form(self):
-        self.category_var.set("Pastry")
-        self.update_names_for_category("Pastry")
-        self.price_var.set("")
-        self.qty_var.set("")
-
-    def on_inventory_select(self, _):
-        sel = self.inv_tree.selection()
-        if not sel:
-            return
-        vals = self.inv_tree.item(sel[0])["values"]
-        # (ID, Name, Category, Price, Quantity, Date Added, Last Updated)
-        _, name, category, price, qty, *_ = vals
-        self.category_var.set(category)
-        # update names list for that category
-        self.update_names_for_category(category)
-        # ensure selected name is visible even if not in preset list
-        if name not in self.name_cb["values"]:
-            self.name_cb["values"] = list(self.name_cb["values"]) + [name]
-        self.name_var.set(name)
-        self.price_var.set(price)
-        self.qty_var.set(qty)
+    def load_inventory(self):
+        for i in getattr(self,"inv_tree",[]).get_children():
+            self.inv_tree.delete(i)
+        con = db_connect(); cur = con.cursor()
+        cur.execute("SELECT id,name,category,price,quantity,last_updated FROM pastries ORDER BY name")
+        for row in cur.fetchall():
+            self.inv_tree.insert("", "end", values=row)
+        con.close()
 
     def add_pastry(self):
-    # Eto yung function na ginagamit kapag nag-add ka ng bagong pastry sa system.
-        name = self.name_var.get().strip()
-        cat = self.category_var.get().strip() or "Pastry"
-        price = self.price_var.get().strip()
-        qty = self.qty_var.get().strip()
-        if not name or not price or not qty:
-            messagebox.showwarning("Input", "Please fill Name, Price, Quantity.")
-            return
-        try:
-            price_f = float(price)
-            qty_i = int(qty)
-        except ValueError:
-            messagebox.showwarning("Input", "Price must be number; Quantity must be integer.")
-            return
+        PastryForm(self, None)
 
-        con = db_connect(); cur = con.cursor()
-        cur.execute("""
-            INSERT INTO pastries (name, category, price, quantity, date_added, last_updated)
-            VALUES (?, ?, ?, ?, ?, ?)
-        """, (name, cat, price_f, qty_i, now_iso(), now_iso()))
-        con.commit(); con.close()
-        self.load_inventory()
-        self.clear_form()
-        messagebox.showinfo("Success", "Pastry added.")
-
-    def update_pastry(self):
+    def edit_pastry(self):
         sel = self.inv_tree.selection()
-        if not sel:
-            messagebox.showwarning("Select", "Select a pastry to update.")
-            return
-        pid = self.inv_tree.item(sel[0])["values"][0]
-
-        name = self.name_var.get().strip()
-        cat = self.category_var.get().strip() or "Pastry"
-        price = self.price_var.get().strip()
-        qty = self.qty_var.get().strip()
-        if not name or not price or not qty:
-            messagebox.showwarning("Input", "Please fill all fields.")
-            return
-        try:
-            price_f = float(price)
-            qty_i = int(qty)
-        except ValueError:
-            messagebox.showwarning("Input", "Price must be number; Quantity must be integer.")
-            return
-
-        con = db_connect(); cur = con.cursor()
-        cur.execute("""
-            UPDATE pastries SET name=?, category=?, price=?, quantity=?, last_updated=?
-            WHERE id=?
-        """, (name, cat, price_f, qty_i, now_iso(), pid))
-        con.commit(); con.close()
-        self.load_inventory()
-        self.clear_form()
-        messagebox.showinfo("Updated", "Pastry updated.")
+        if not sel: return
+        vals = self.inv_tree.item(sel[0],"values")
+        PastryForm(self, vals[0])
 
     def delete_pastry(self):
         sel = self.inv_tree.selection()
-        if not sel:
-            messagebox.showwarning("Select", "Select a pastry to delete.")
-            return
-        pid = self.inv_tree.item(sel[0])["values"][0]
-        if messagebox.askyesno("Confirm", "Delete selected pastry?"):
+        if not sel: return
+        pid = self.inv_tree.item(sel[0],"values")[0]
+        if messagebox.askyesno("Delete","Delete this pastry?"):
             con = db_connect(); cur = con.cursor()
             cur.execute("DELETE FROM pastries WHERE id=?", (pid,))
             con.commit(); con.close()
-            self.load_inventory()
+            self.load_inventory(); self.refresh_catalog()
 
-    def search_inventory(self):
-        kw = self.search_var.get().strip()
+    def export_inventory(self):
         con = db_connect(); cur = con.cursor()
-        cur.execute("""SELECT id,name,category,price,quantity,date_added,last_updated
-                       FROM pastries WHERE name LIKE ? ORDER BY name ASC""", (f"%{kw}%",))
+        cur.execute("SELECT id,name,category,price,quantity,last_updated FROM pastries")
         rows = cur.fetchall(); con.close()
-        self.populate_inventory(rows)
+        path = os.path.join(EXPORTS_DIR,f"Inventory_{datetime.now().strftime('%Y%m%d_%H%M')}.csv")
+        with open(path,"w",newline="",encoding="utf-8") as f:
+            csv.writer(f).writerows([["ID","Name","Category","Price","Quantity","Last Updated"]]+rows)
+        messagebox.showinfo("Exported", f"Saved to {path}")
 
-    def load_inventory(self):
-        con = db_connect(); cur = con.cursor()
-        cur.execute("""SELECT id,name,category,price,quantity,date_added,last_updated
-                       FROM pastries ORDER BY name ASC""")
-        rows = cur.fetchall()
-
-        # total value
-        cur.execute("SELECT COALESCE(SUM(price*quantity),0) FROM pastries")
-        total = cur.fetchone()[0]
-        con.close()
-        self.total_value_lbl.config(text=f"Total Inventory Value: {format_money(total)}")
-
-        self.populate_inventory(rows)
-
-    def populate_inventory(self, rows):
-        self.inv_tree.delete(*self.inv_tree.get_children())
-        for row in rows:
-            pid, name, cat, price, qty, da, lu = row
-            tag = "low" if qty < LOW_STOCK_THRESHOLD else ""
-            self.inv_tree.insert("", "end",
-                                 values=(pid, name, cat, f"{price:.2f}", qty, da, lu),
-                                 tags=(tag,) if tag else ())
-
-    def export_inventory_csv(self):
-        path = filedialog.asksaveasfilename(
-            defaultextension=".csv", initialdir=BASE_DIR,
-            filetypes=[("CSV files","*.csv")], title="Save Inventory CSV"
-        )
-        if not path: return
-        con = db_connect(); cur = con.cursor()
-        cur.execute("""SELECT id,name,category,price,quantity,date_added,last_updated FROM pastries""")
-        rows = cur.fetchall(); con.close()
-        with open(path, "w", newline="", encoding="utf-8") as f:
-            w = csv.writer(f)
-            w.writerow(["ID","Name","Category","Price","Quantity","Date Added","Last Updated"])
-            for r in rows: w.writerow(r)
-        messagebox.showinfo("Exported", f"Inventory exported to:\n{path}")
-
-    # ---------------- Sales ----------------
-    def build_sales_tab(self):
-        frm = self.sales_tab
-
-        box = ttk.LabelFrame(frm, text="Record a Sale", padding=10)
-        box.pack(side="top", fill="x", padx=8, pady=8)
-
-        self.sale_pastry_var = tk.StringVar()
-        self.sale_qty_var = tk.StringVar()
-
-        ttk.Label(box, text="Pastry:").grid(row=0, column=0, sticky="w", padx=5, pady=4)
-        self.sale_pastry_cb = ttk.Combobox(box, textvariable=self.sale_pastry_var, width=40, state="readonly")
-        self.sale_pastry_cb.grid(row=0, column=1, padx=5, pady=4)
-
-        ttk.Label(box, text="Quantity:").grid(row=0, column=2, sticky="w", padx=5, pady=4)
-        ttk.Entry(box, textvariable=self.sale_qty_var, width=12).grid(row=0, column=3, padx=5, pady=4)
-
-        ttk.Button(box, text="Add Sale", width=16, command=self.add_sale).grid(row=0, column=4, padx=6, pady=4)
-
-        # Sales table (recent)
-        table_frame = ttk.Frame(frm)
-        table_frame.pack(fill="both", expand=True, padx=8, pady=8)
-
-        cols = ("ID","Time","Pastry","Qty","Unit Price","Total","Staff")
-        self.sales_tree = ttk.Treeview(table_frame, columns=cols, show="headings", height=12)
-        for c in cols:
-            self.sales_tree.heading(c, text=c)
-        self.sales_tree.column("ID", width=60, anchor="center")
-        self.sales_tree.column("Time", width=160, anchor="center")
-        self.sales_tree.column("Pastry", width=260)
-        self.sales_tree.column("Qty", width=80, anchor="center")
-        self.sales_tree.column("Unit Price", width=100, anchor="e")
-        self.sales_tree.column("Total", width=110, anchor="e")
-        self.sales_tree.column("Staff", width=120, anchor="center")
-        self.sales_tree.pack(side="left", fill="both", expand=True)
-
-        vsb = ttk.Scrollbar(table_frame, orient="vertical", command=self.sales_tree.yview)
-        self.sales_tree.configure(yscroll=vsb.set)
-        vsb.pack(side="right", fill="y")
-
-        self.load_recent_sales()
-
-    def refresh_sales_dropdown(self):
-        con = db_connect(); cur = con.cursor()
-        cur.execute("SELECT id, name, price FROM pastries ORDER BY name ASC")
-        items = cur.fetchall()
-        con.close()
-        # Display as "Name (₱price) [id]"
-        display = [f"{n} ({format_money(p)}) [#{i}]" for i, n, p in items]
-        self.sale_pastry_cb["values"] = display
-        if display:
-            self.sale_pastry_cb.current(0)
-
-    def add_sale(self):
-        sel = self.sale_pastry_var.get()
-        qty_s = self.sale_qty_var.get().strip()
-        if not sel or not qty_s:
-            messagebox.showwarning("Input", "Select a pastry and enter quantity.")
-            return
-        try:
-            qty = int(qty_s)
-            if qty <= 0: raise ValueError
-        except ValueError:
-            messagebox.showwarning("Input", "Quantity must be a positive integer.")
-            return
-
-        # Extract pastry id from string "... [#id]"
-        try:
-            pid = int(sel.split("[#")[-1].rstrip("]"))
-        except:
-            messagebox.showerror("Error", "Could not parse pastry selection.")
-            return
-
-        con = db_connect(); cur = con.cursor()
-        cur.execute("SELECT name, price, quantity FROM pastries WHERE id=?", (pid,))
-        row = cur.fetchone()
-        if not row:
-            con.close()
-            messagebox.showerror("Error", "Pastry not found.")
-            return
-        name, unit_price, stock = row
-        if qty > stock:
-            con.close()
-            messagebox.showwarning("Stock", f"Not enough stock for '{name}'. Available: {stock}.")
-            return
-
-        total = unit_price * qty
-        # Record sale
-        cur.execute("""
-            INSERT INTO sales (pastry_id, qty, unit_price, total, sale_time, staff_username)
-            VALUES (?, ?, ?, ?, ?, ?)
-        """, (pid, qty, unit_price, total, now_iso(), self.username))
-        # Deduct stock
-        cur.execute("""
-            UPDATE pastries SET quantity = quantity - ?, last_updated=? WHERE id=?
-        """, (qty, now_iso(), pid))
-
-        con.commit(); con.close()
-        self.load_inventory()
-        self.refresh_sales_dropdown()
-        self.load_recent_sales()
-        self.refresh_reports()
-        self.sale_qty_var.set("")
-        messagebox.showinfo("Sale Recorded", f"Sold {qty} × {name} = {format_money(total)}")
-
-    def load_recent_sales(self, limit=100):
-        self.sales_tree.delete(*self.sales_tree.get_children())
-        con = db_connect(); cur = con.cursor()
-        cur.execute("""
-            SELECT s.id, s.sale_time, p.name, s.qty, s.unit_price, s.total, s.staff_username
-            FROM sales s JOIN pastries p ON s.pastry_id=p.id
-            ORDER BY s.id DESC LIMIT ?
-        """, (limit,))
-        for r in cur.fetchall():
-            sid, t, name, qty, up, tot, staff = r
-            self.sales_tree.insert("", "end",
-                                   values=(sid, t, name, qty, f"{up:.2f}", f"{tot:.2f}", staff))
-        con.close()
-
-    # ---------------- Reports ----------------
+    # ---------------- Reports Tab ----------------
     def build_reports_tab(self):
         frm = self.reports_tab
+        top = ttk.Frame(frm)
+        top.pack(fill="x", pady=6)
+        self.report_type_var = tk.StringVar(value="Monthly")
+        ttk.Label(top, text="Report Type:").pack(side="left", padx=4)
+        rep_type_cb = ttk.Combobox(top, textvariable=self.report_type_var, values=["Weekly", "Monthly"], state="readonly", width=10)
+        rep_type_cb.pack(side="left", padx=4)
+        rep_type_cb.bind("<<ComboboxSelected>>", self.on_report_type_change)
+        self.rep_from = tk.StringVar()
+        self.rep_to = tk.StringVar()
+        ttk.Label(top, text="From:").pack(side="left")
+        self.rep_from_entry = ttk.Entry(top, textvariable=self.rep_from, width=12)
+        self.rep_from_entry.pack(side="left", padx=3)
+        ttk.Label(top, text="To:").pack(side="left")
+        self.rep_to_entry = ttk.Entry(top, textvariable=self.rep_to, width=12)
+        self.rep_to_entry.pack(side="left", padx=3)
+        ttk.Button(top, text="Filter", style="Accent.TButton", command=self.refresh_reports).pack(side="left", padx=6)
+        ttk.Button(top, text="Export to CSV", command=self.export_reports_csv).pack(side="left", padx=6)
+        self.rep_tree = ttk.Treeview(frm, columns=("Date","Receipt#","Staff","Customer","Total"), show="headings")
+        for c in ("Date","Receipt#","Staff","Customer","Total"):
+            self.rep_tree.heading(c,text=c)
+        self.rep_tree.column("Date", width=160)
+        self.rep_tree.column("Total", anchor="e")
+        self.rep_tree.pack(fill="both", expand=True, padx=6, pady=6)
+        # Initialize date range based on default report type
+        self.set_report_date_range()
 
-        filters = ttk.LabelFrame(frm, text="Filters", padding=10)
-        filters.pack(side="top", fill="x", padx=8, pady=8)
-
-        self.report_from_var = tk.StringVar()
-        self.report_to_var = tk.StringVar()
-
-        ttk.Label(filters, text="From (YYYY-MM-DD):").grid(row=0, column=0, sticky="w", padx=5, pady=4)
-        ttk.Entry(filters, textvariable=self.report_from_var, width=16).grid(row=0, column=1, padx=5, pady=4)
-        ttk.Label(filters, text="To (YYYY-MM-DD):").grid(row=0, column=2, sticky="w", padx=5, pady=4)
-        ttk.Entry(filters, textvariable=self.report_to_var, width=16).grid(row=0, column=3, padx=5, pady=4)
-
-        ttk.Button(filters, text="Apply", command=self.refresh_reports).grid(row=0, column=4, padx=8)
-        ttk.Button(filters, text="Clear", command=self.clear_report_filters).grid(row=0, column=5, padx=4)
-        ttk.Button(filters, text="Export CSV", command=self.export_sales_csv).grid(row=0, column=6, padx=12)
-
-        # KPI cards
-        kpi = ttk.Frame(frm)
-        kpi.pack(side="top", fill="x", padx=8)
-        self.today_total_lbl = ttk.Label(kpi, text="Today's Sales: ₱0.00", font=("Segoe UI", 11, "bold"))
-        self.week_total_lbl = ttk.Label(kpi, text="This Week: ₱0.00", font=("Segoe UI", 11, "bold"))
-        self.today_total_lbl.pack(side="left", padx=6, pady=4)
-        self.week_total_lbl.pack(side="left", padx=20, pady=4)
-
-        # Sales table
-        table_frame = ttk.Frame(frm)
-        table_frame.pack(fill="both", expand=True, padx=8, pady=8)
-
-        cols = ("ID","Time","Pastry","Qty","Unit Price","Total","Staff")
-        self.report_tree = ttk.Treeview(table_frame, columns=cols, show="headings", height=12)
-        for c in cols:
-            self.report_tree.heading(c, text=c)
-        self.report_tree.column("ID", width=60, anchor="center")
-        self.report_tree.column("Time", width=160, anchor="center")
-        self.report_tree.column("Pastry", width=260)
-        self.report_tree.column("Qty", width=80, anchor="center")
-        self.report_tree.column("Unit Price", width=100, anchor="e")
-        self.report_tree.column("Total", width=110, anchor="e")
-        self.report_tree.column("Staff", width=120, anchor="center")
-        self.report_tree.pack(side="left", fill="both", expand=True)
-
-        vsb = ttk.Scrollbar(table_frame, orient="vertical", command=self.report_tree.yview)
-        self.report_tree.configure(yscroll=vsb.set)
-        vsb.pack(side="right", fill="y")
-
-    def clear_report_filters(self):
-        self.report_from_var.set("")
-        self.report_to_var.set("")
+    def on_report_type_change(self, event=None):
+        self.set_report_date_range()
         self.refresh_reports()
 
+    def set_report_date_range(self):
+        today = datetime.now().date()
+        if self.report_type_var.get() == "Weekly":
+            start = today - timedelta(days=today.weekday())  # Monday this week
+            end = start + timedelta(days=6)  # Sunday
+        else:  # Monthly
+            start = today.replace(day=1)
+            # last day of month
+            next_month = (start.replace(day=28) + timedelta(days=4)).replace(day=1)
+            end = next_month - timedelta(days=1)
+        self.rep_from.set(start.strftime("%Y-%m-%d"))
+        self.rep_to.set(end.strftime("%Y-%m-%d"))
+
     def refresh_reports(self):
-        # Apply filters
-        from_d = self.report_from_var.get().strip()
-        to_d = self.report_to_var.get().strip()
-
-        q = """
-            SELECT s.id, s.sale_time, p.name, s.qty, s.unit_price, s.total, s.staff_username
-            FROM sales s JOIN pastries p ON s.pastry_id=p.id
-        """
-        params = []
-        clauses = []
-        if from_d:
-            clauses.append("date(s.sale_time) >= date(?)")
-            params.append(from_d)
-        if to_d:
-            clauses.append("date(s.sale_time) <= date(?)")
-            params.append(to_d)
-
-        if clauses:
-            q += " WHERE " + " AND ".join(clauses)
-        q += " ORDER BY s.sale_time DESC"
-
-        self.report_tree.delete(*self.report_tree.get_children())
+        if not hasattr(self,"rep_tree"): return
+        for i in self.rep_tree.get_children():
+            self.rep_tree.delete(i)
         con = db_connect(); cur = con.cursor()
-        cur.execute(q, tuple(params))
-        rows = cur.fetchall()
-        for r in rows:
-            sid, t, name, qty, up, tot, staff = r
-            self.report_tree.insert("", "end", values=(sid, t, name, qty, f"{up:.2f}", f"{tot:.2f}", staff))
-
-        # KPI: Today + This Week
-        today_str = datetime.now().strftime("%Y-%m-%d")
-        cur.execute("SELECT COALESCE(SUM(total),0) FROM sales WHERE date(sale_time)=date(?)", (today_str,))
-        today_total = cur.fetchone()[0]
-
-        now = datetime.now()
-        start_of_week = now - timedelta(days=now.weekday())  # Monday
-        end_of_week = start_of_week + timedelta(days=6)
-        cur.execute("""SELECT COALESCE(SUM(total),0) FROM sales
-                       WHERE date(sale_time) BETWEEN date(?) AND date(?)""",
-                    (start_of_week.strftime("%Y-%m-%d"), end_of_week.strftime("%Y-%m-%d")))
-        week_total = cur.fetchone()[0]
+        cur.execute("SELECT created_at,receipt_no,staff_username,COALESCE(customer_name,''),total FROM receipts WHERE date(created_at) BETWEEN ? AND ? ORDER BY created_at DESC",(self.rep_from.get(),self.rep_to.get()))
+        for row in cur.fetchall():
+            self.rep_tree.insert("","end",values=row)
         con.close()
 
-        self.today_total_lbl.config(text=f"Today's Sales: {format_money(today_total)}")
-        self.week_total_lbl.config(text=f"This Week: {format_money(week_total)}")
+    def export_reports_csv(self):
+        if not hasattr(self, "rep_tree"): 
+            return
 
-    def export_sales_csv(self):
-        path = filedialog.asksaveasfilename(
-            defaultextension=".csv", initialdir=BASE_DIR,
-            filetypes=[("CSV files","*.csv")], title="Save Sales CSV"
-        )
-        if not path: return
+        # Ask where to save
+        file = filedialog.asksaveasfilename(defaultextension=".csv",
+                                            filetypes=[("CSV Files","*.csv")],
+                                            title="Save Report as CSV")
+        if not file:
+            return
 
-        from_d = self.report_from_var.get().strip()
-        to_d = self.report_to_var.get().strip()
-        q = """
-            SELECT s.id, s.sale_time, p.name, s.qty, s.unit_price, s.total, s.staff_username
-            FROM sales s JOIN pastries p ON s.pastry_id=p.id
-        """
-        params = []
-        clauses = []
-        if from_d:
-            clauses.append("date(s.sale_time) >= date(?)")
-            params.append(from_d)
-        if to_d:
-            clauses.append("date(s.sale_time) <= date(?)")
-            params.append(to_d)
-        if clauses:
-            q += " WHERE " + " AND ".join(clauses)
-        q += " ORDER BY s.sale_time DESC"
+        # Get headings
+        cols = ("Date","Receipt#","Staff","Customer","Total")
 
-        con = db_connect(); cur = con.cursor()
-        cur.execute(q, tuple(params))
-        rows = cur.fetchall(); con.close()
+        with open(file, "w", newline="", encoding="utf-8") as f:
+            writer = csv.writer(f)
+            writer.writerow(cols)  # header
 
-        with open(path, "w", newline="", encoding="utf-8") as f:
-            w = csv.writer(f)
-            w.writerow(["ID","Time","Pastry","Qty","Unit Price","Total","Staff"])
-            for r in rows:
-                sid, t, name, qty, up, tot, staff = r
-                w.writerow([sid, t, name, qty, f"{up:.2f}", f"{tot:.2f}", staff])
-        messagebox.showinfo("Exported", f"Sales exported to:\n{path}")
+            # Write rows from Treeview
+            for row_id in self.rep_tree.get_children():
+                values = self.rep_tree.item(row_id)["values"]
+                writer.writerow(values)
 
-    # ---------------- Users (Admin) ----------------
+        messagebox.showinfo("Export Successful", f"Report exported to:\n{file}")
+
+
+    # ---------------- Users Tab ----------------
     def build_users_tab(self):
         frm = self.users_tab
-
-        box = ttk.LabelFrame(frm, text="Add User", padding=10)
-        box.pack(side="top", fill="x", padx=8, pady=8)
-
-        self.new_user_var = tk.StringVar()
-        self.new_pw_var = tk.StringVar()
-        self.new_role_var = tk.StringVar(value="Staff")
-
-        ttk.Label(box, text="Username:").grid(row=0, column=0, sticky="w", padx=5, pady=4)
-        ttk.Entry(box, textvariable=self.new_user_var, width=24).grid(row=0, column=1, padx=5, pady=4)
-
-        ttk.Label(box, text="Password:").grid(row=0, column=2, sticky="w", padx=5, pady=4)
-        ttk.Entry(box, textvariable=self.new_pw_var, show="*", width=24).grid(row=0, column=3, padx=5, pady=4)
-
-        ttk.Label(box, text="Role:").grid(row=0, column=4, sticky="w", padx=5, pady=4)
-        ttk.Combobox(box, textvariable=self.new_role_var, values=["Admin","Staff"], width=10, state="readonly").grid(row=0, column=5, padx=5, pady=4)
-
-        ttk.Button(box, text="Add User", command=self.add_user).grid(row=0, column=6, padx=10)
-
-        # Users table
-        table_frame = ttk.Frame(frm)
-        table_frame.pack(fill="both", expand=True, padx=8, pady=8)
-
-        cols = ("ID","Username","Role","Created")
-        self.users_tree = ttk.Treeview(table_frame, columns=cols, show="headings", height=12)
-        for c in cols:
-            self.users_tree.heading(c, text=c)
-        self.users_tree.column("ID", width=60, anchor="center")
-        self.users_tree.column("Username", width=220)
-        self.users_tree.column("Role", width=100, anchor="center")
-        self.users_tree.column("Created", width=180, anchor="center")
-        self.users_tree.pack(side="left", fill="both", expand=True)
-
-        vsb = ttk.Scrollbar(table_frame, orient="vertical", command=self.users_tree.yview)
-        self.users_tree.configure(yscroll=vsb.set)
-        vsb.pack(side="right", fill="y")
-
-        # bottom buttons
-        btns = ttk.Frame(frm)
-        btns.pack(side="bottom", fill="x", padx=8, pady=6)
-        ttk.Button(btns, text="Delete Selected User", command=self.delete_user).pack(side="left")
-        ttk.Button(btns, text="Refresh", command=self.load_users).pack(side="left", padx=8)
-
+        top = ttk.Frame(frm)
+        top.pack(fill="x", pady=6)
+        ttk.Button(top, text="Add User", style="Accent.TButton", command=self.add_user).pack(side="left", padx=3)
+        ttk.Button(top, text="Delete User", style="Soft.TButton", command=self.delete_user).pack(side="left", padx=3)
+        self.usr_tree = ttk.Treeview(frm, columns=("ID","Username","Role","Created"), show="headings")
+        for c in ("ID","Username","Role","Created"):
+            self.usr_tree.heading(c,text=c)
+        self.usr_tree.pack(fill="both", expand=True, padx=6, pady=6)
         self.load_users()
 
-    def add_user(self):
-        u = self.new_user_var.get().strip()
-        p = self.new_pw_var.get().strip()
-        r = self.new_role_var.get().strip()
-        if not u or not p or r not in ("Admin","Staff"):
-            messagebox.showwarning("Input", "Fill Username, Password and Role.")
-            return
-        con = db_connect(); cur = con.cursor()
-        try:
-            cur.execute("INSERT INTO users (username, password_hash, role) VALUES (?,?,?)",
-                        (u, hash_pw(p), r))
-            con.commit()
-            self.new_user_var.set(""); self.new_pw_var.set(""); self.new_role_var.set("Staff")
-            self.load_users()
-            messagebox.showinfo("Success", "User added.")
-        except sqlite3.IntegrityError:
-            messagebox.showwarning("Exists", "Username already exists.")
-        finally:
-            con.close()
-
     def load_users(self):
-        self.users_tree.delete(*self.users_tree.get_children())
+        for i in self.usr_tree.get_children():
+            self.usr_tree.delete(i)
         con = db_connect(); cur = con.cursor()
-        cur.execute("SELECT id, username, role, created_at FROM users ORDER BY id ASC")
-        for r in cur.fetchall():
-            self.users_tree.insert("", "end", values=r)
+        cur.execute("SELECT id,username,role,created_at FROM users")
+        for row in cur.fetchall():
+            self.usr_tree.insert("","end",values=row)
         con.close()
 
-    def delete_user(self):
-        sel = self.users_tree.selection()
-        if not sel:
-            messagebox.showwarning("Select", "Select a user to delete.")
-            return
-        uid, uname, role, _ = self.users_tree.item(sel[0])["values"]
-        if uname == self.username:
-            messagebox.showwarning("Action blocked", "You cannot delete your own account while logged in.")
-            return
-        if messagebox.askyesno("Confirm", f"Delete user '{uname}'?"):
-            con = db_connect(); cur = con.cursor()
-            cur.execute("DELETE FROM users WHERE id=?", (uid,))
-            con.commit(); con.close()
-            self.load_users()
+    def add_user(self):
+        UserForm(self)
 
-# -------------------- Login Window --------------------
+    def delete_user(self):
+        sel = self.usr_tree.selection()
+        if not sel: return
+        uid = self.usr_tree.item(sel[0],"values")[0]
+        if messagebox.askyesno("Delete","Delete this user?"):
+            con = db_connect(); cur = con.cursor()
+            cur.execute("DELETE FROM users WHERE id=?",(uid,))
+            con.commit(); con.close(); self.load_users()
+
+# ---------------- Pastry Form ----------------
+class PastryForm(tk.Toplevel):
+    def __init__(self, master:App, pastry_id):
+        super().__init__(master)
+        self.pastry_id = pastry_id
+        self.title("Pastry")
+        self.geometry("400x360")
+
+                # Category selection
+        ttk.Label(self, text="Category:").pack(pady=4)
+        self.category = tk.StringVar()
+        self.cat_cb = ttk.Combobox(self, textvariable=self.category,
+                                   values=list(CATEGORY_ITEMS.keys()), state="readonly")
+        self.cat_cb.pack(fill="x", padx=6)
+
+        # Product selection (depends on category)
+        ttk.Label(self, text="Name:").pack(pady=4)
+        self.name = tk.StringVar()
+        self.product_cb = ttk.Combobox(self, textvariable=self.name, state="readonly")
+        self.product_cb.pack(fill="x", padx=6)
+
+        # Update products when category changes
+        def update_products(event):
+            cat = self.category.get()
+            products = CATEGORY_ITEMS.get(cat, [])
+            self.product_cb["values"] = products
+            if products:
+                self.product_cb.current(0)  # auto-select first item
+
+        self.cat_cb.bind("<<ComboboxSelected>>", update_products)
+
+        ttk.Label(self,text="Price:").pack(pady=4)
+        self.price=tk.DoubleVar(); ttk.Entry(self,textvariable=self.price).pack(fill="x",padx=6)
+        ttk.Label(self,text="Quantity:").pack(pady=4)
+        self.qty=tk.IntVar(); ttk.Entry(self,textvariable=self.qty).pack(fill="x",padx=6)
+        ttk.Button(self,text="Save",style="Accent.TButton",command=self.save).pack(pady=8)
+        if pastry_id:
+            con=db_connect();cur=con.cursor();cur.execute("SELECT name,category,price,quantity FROM pastries WHERE id=?",(pastry_id,))
+            r=cur.fetchone();con.close()
+            if r: self.name.set(r[0]); self.cat.set(r[1]); self.price.set(r[2]); self.qty.set(r[3])
+
+    def save(self):
+        # Validate price
+        try:
+            price_val = float(self.price.get())
+            if price_val < 0:
+                raise ValueError
+        except Exception:
+            messagebox.showerror("Invalid input", "Price must be a positive number.")
+            return
+        # Validate quantity
+        try:
+            qty_val = int(self.qty.get())
+            if qty_val < 0:
+                raise ValueError
+        except Exception:
+            messagebox.showerror("Invalid input", "Quantity must be a non-negative integer.")
+            return
+        con=db_connect();cur=con.cursor()
+        if self.pastry_id:
+            cur.execute("UPDATE pastries SET name=?,category=?,price=?,quantity=?,last_updated=? WHERE id=?",
+                        (self.name.get(),self.category.get(),price_val,qty_val,now_iso(),self.pastry_id))
+        else:
+            cur.execute("INSERT INTO pastries (name,category,price,quantity,date_added,last_updated) VALUES (?,?,?,?,?,?)",
+                        (self.name.get(), self.category.get(), price_val, qty_val, now_iso(), now_iso()))
+        con.commit();con.close()
+        self.destroy(); self.master.load_inventory(); self.master.refresh_catalog()
+
+# ---------------- User Form ----------------
+class UserForm(tk.Toplevel):
+    def __init__(self, master:App):
+        super().__init__(master)
+        self.title("Add User"); self.geometry("280x220")
+        self.username=tk.StringVar(); self.password=tk.StringVar(); self.role=tk.StringVar(value="Staff")
+        ttk.Label(self,text="Username:").pack(pady=4); ttk.Entry(self,textvariable=self.username).pack(fill="x",padx=6)
+        ttk.Label(self,text="Password:").pack(pady=4); ttk.Entry(self,textvariable=self.password,show="*").pack(fill="x",padx=6)
+        ttk.Label(self,text="Role:").pack(pady=4); ttk.Combobox(self,textvariable=self.role,values=["Admin","Staff"],state="readonly").pack(fill="x",padx=6)
+        ttk.Button(self,text="Save",style="Accent.TButton",command=self.save).pack(pady=8)
+
+    def save(self):
+        if not self.username.get() or not self.password.get(): return
+        con=db_connect();cur=con.cursor()
+        cur.execute("INSERT INTO users (username,password_hash,role) VALUES (?,?,?)",(self.username.get(),hash_pw(self.password.get()),self.role.get()))
+        con.commit();con.close(); self.destroy(); self.master.load_users()
+
+# ---------------- Login Window ----------------
 class LoginWindow(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("🍰 MambaMunchies — Login")
-        self.geometry("500x300")
-        self.resizable(False, False)
+        self.geometry("500x350")
 
-        # Center window on screen
-        self.update_idletasks()
-        w, h = 500, 300
-        x = (self.winfo_screenwidth() // 2) - (w // 2)
-        y = (self.winfo_screenheight() // 2) - (h // 2)
-        self.geometry(f"{w}x{h}+{x}+{y}")
-
-        # Title Label
         title = ttk.Label(self, text="MambaMunchies", font=("Segoe UI", 16, "bold"))
-        title.pack(pady=(20, 10))
+        title.pack(pady=(10, 5))
 
-        # Frame with padding
-        frame = ttk.LabelFrame(self, text="🔐 Sign In", padding=20)
-        frame.pack(padx=40, pady=10)  # removed expand=True so it doesn’t push other widgets
+        logo_img = Image.open("logo.jpg").resize((120, 120)) 
+        self.logo_photo = ImageTk.PhotoImage(logo_img)
+        ttk.Label(self, image=self.logo_photo).pack(pady=6)
 
-        # Variables
-        self.u_var = tk.StringVar()
-        self.p_var = tk.StringVar()
-
-        # Username
-        ttk.Label(frame, text="Username:", font=("Segoe UI", 11)).grid(row=0, column=0, sticky="e", padx=8, pady=10)
-        ttk.Entry(frame, textvariable=self.u_var, width=28, font=("Segoe UI", 11)).grid(row=0, column=1, padx=8, pady=10)
-
-        # Password
-        ttk.Label(frame, text="Password:", font=("Segoe UI", 11)).grid(row=1, column=0, sticky="e", padx=8, pady=10)
-        ttk.Entry(frame, textvariable=self.p_var, show="*", width=28, font=("Segoe UI", 11)).grid(row=1, column=1, padx=8, pady=10)
-
-        # Login button
-        ttk.Button(frame, text="Login", command=self.do_login).grid(row=2, column=0, columnspan=2, pady=15)
-
-        # Info text (now inside frame)
-        info = ttk.Label(frame, text="Default admin →  admin / admin123", foreground="#666", font=("Segoe UI", 9))
-        info.grid(row=3, column=0, columnspan=2, pady=(10, 0))
+        self.user=tk.StringVar(); self.pw=tk.StringVar()
+        ttk.Label(self,text="Username:").pack(pady=2); ttk.Entry(self,textvariable=self.user).pack(fill="x",padx=30)
+        ttk.Label(self,text="Password:").pack(pady=2); ttk.Entry(self,textvariable=self.pw,show="*").pack(fill="x",padx=30)
+        ttk.Button(self,text="Login",style="Accent.TButton",command=self.do_login).pack(pady=10)
 
     def do_login(self):
-        u = self.u_var.get().strip()
-        p = self.p_var.get().strip()
-        if not u or not p:
-            messagebox.showwarning("Input", "Enter username and password.")
-            return
+        con=db_connect();cur=con.cursor()
+        cur.execute("SELECT role,password_hash FROM users WHERE username=?",(self.user.get(),))
+        r=cur.fetchone();con.close()
+        if r and r[1]==hash_pw(self.pw.get()):
+            self.destroy(); App(self.user.get(),r[0]).mainloop()
+        else:
+            messagebox.showerror("Login","Invalid credentials")
 
-        con = db_connect(); cur = con.cursor()
-        cur.execute("SELECT password_hash, role FROM users WHERE username=?", (u,))
-        row = cur.fetchone(); con.close()
-        if not row or row[0] != hash_pw(p):
-            messagebox.showerror("Login failed", "Invalid username or password.")
-            return
-
-        role = row[1]
-        self.destroy()
-        app = App(username=u, role=role)
-        app.mainloop()
-
-# -------------------- Run --------------------
-if __name__ == "__main__":
-    init_db()
-    LoginWindow().mainloop()
+# ---------------- Main ----------------
+if __name__=="__main__":
+    init_db(); LoginWindow().mainloop()

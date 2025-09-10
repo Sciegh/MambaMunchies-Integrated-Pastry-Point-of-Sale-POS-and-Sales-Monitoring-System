@@ -856,29 +856,35 @@ class App(tk.Tk):
         con.close()
 
     def export_reports_csv(self):
-        if not hasattr(self, "rep_tree"): 
+        if not hasattr(self, "rep_tree"):
             return
 
-        # Ask where to save
-        file = filedialog.asksaveasfilename(defaultextension=".csv",
-                                            filetypes=[("CSV Files","*.csv")],
-                                            title="Save Report as CSV")
-        if not file:
-            return
+        import os
+        from datetime import datetime
+
+        # Ensure "Exports" folder exists
+        os.makedirs("Exports", exist_ok=True)
+
+        # Auto filename with timestamp
+        filename = f"Exports/report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
 
         # Get headings
-        cols = ("Date","Receipt#","Staff","Customer","Total")
+        cols = ("Date", "Receipt#", "Staff", "Customer", "Total")
 
-        with open(file, "w", newline="", encoding="utf-8") as f:
-            writer = csv.writer(f)
-            writer.writerow(cols)  # header
+        try:
+            with open(filename, "w", newline="", encoding="utf-8") as f:
+                writer = csv.writer(f)
+                writer.writerow(cols)  # header
 
-            # Write rows from Treeview
-            for row_id in self.rep_tree.get_children():
-                values = self.rep_tree.item(row_id)["values"]
-                writer.writerow(values)
+                # Write rows from Treeview
+                for row_id in self.rep_tree.get_children():
+                    values = self.rep_tree.item(row_id)["values"]
+                    writer.writerow(values)
 
-        messagebox.showinfo("Export Successful", f"Report exported to:\n{file}")
+            messagebox.showinfo("Export Successful", f"Report exported to:\n{filename}")
+        except Exception as e:
+            messagebox.showerror("Export Failed", str(e))
+
 
 
     # ---------------- Users Tab ----------------

@@ -310,6 +310,10 @@ class App(tk.Tk):
         self.geometry("1200x780")
         self.minsize(1920, 1080)
 
+        for i in range(6):
+            self.rowconfigure(i, weight=1)
+        self.columnconfigure(0, weight=1)
+
         style_app(self)
 
         # Top bar
@@ -943,8 +947,9 @@ class PastryForm(tk.Toplevel):
     def __init__(self, master:App, pastry_id):
         super().__init__(master)
         self.pastry_id = pastry_id
-        self.title("Pastry")
+        self.title("Add / Edit Pastry")
         self.geometry("400x360")
+        self.resizable(True, True)
 
                 # Category selection
         ttk.Label(self, text="Category:").pack(pady=4)
@@ -970,41 +975,70 @@ class PastryForm(tk.Toplevel):
         self.cat_cb.bind("<<ComboboxSelected>>", update_products)
 
         ttk.Label(self,text="Price:").pack(pady=4)
-        self.price=tk.DoubleVar(); ttk.Entry(self,textvariable=self.price).pack(fill="x",padx=6)
+        self.price=tk.DoubleVar(value=5.00); ttk.Entry(self,textvariable=self.price).pack(fill="x",padx=6)
         ttk.Label(self,text="Quantity:").pack(pady=4)
-        self.qty=tk.IntVar(); ttk.Entry(self,textvariable=self.qty).pack(fill="x",padx=6)
+        self.qty=tk.IntVar(value=1); ttk.Entry(self,textvariable=self.qty).pack(fill="x",padx=6)
         ttk.Button(self,text="Save",style="Accent.TButton",command=self.save).pack(pady=8)
         if pastry_id:
             con=db_connect();cur=con.cursor();cur.execute("SELECT name,category,price,quantity FROM pastries WHERE id=?",(pastry_id,))
             r=cur.fetchone();con.close()
             if r: self.name.set(r[0]); self.cat.set(r[1]); self.price.set(r[2]); self.qty.set(r[3])
 
+ # --------------------------------------------------------
     def save(self):
-        # Validate price
+        name = self.name.get().strip()
+        category = self.category.get()
         try:
             price_val = float(self.price.get())
-            if price_val < 0:
-                raise ValueError
-        except Exception:
-            messagebox.showerror("Invalid input", "Price must be a positive number.")
-            return
-        # Validate quantity
-        try:
             qty_val = int(self.qty.get())
-            if qty_val < 0:
-                raise ValueError
         except Exception:
-            messagebox.showerror("Invalid input", "Quantity must be a non-negative integer.")
+            messagebox.showerror("Invalid Input", "Please enter valid numeric values for price and quantity.")
             return
-        con=db_connect();cur=con.cursor()
+
+        # ---------------- Validations ----------------
+        if not category:
+            messagebox.showwarning("Missing Category", "Please select a category.")
+            return
+        if not name:
+            messagebox.showwarning("Missing Name", "Please select a pastry name.")
+            return
+        if price_val < 5:
+            messagebox.showwarning("Invalid Price", "Minimum price is ₱5.00.")
+            return
+        if qty_val < 1:
+            messagebox.showwarning("Invalid Quantity", "Quantity must be at least 1.")
+            return
+
+        con = db_connect()
+        cur = con.cursor()
+
+        # ---------------- Duplicate Check ----------------
+        cur.execute("SELECT id FROM pastries WHERE name=? COLLATE NOCASE", (name,))
+        existing = cur.fetchone()
+        if existing and (not self.pastry_id or existing[0] != self.pastry_id):
+            messagebox.showwarning("Duplicate Item", f"'{name}' already exists in the inventory.")
+            con.close()
+            return
+
+        # ---------------- Save or Update ----------------
         if self.pastry_id:
-            cur.execute("UPDATE pastries SET name=?,category=?,price=?,quantity=?,last_updated=? WHERE id=?",
-                        (self.name.get(),self.category.get(),price_val,qty_val,now_iso(),self.pastry_id))
+            cur.execute(
+                "UPDATE pastries SET name=?, category=?, price=?, quantity=?, last_updated=? WHERE id=?",
+                (name, category, price_val, qty_val, now_iso(), self.pastry_id),
+            )
         else:
-            cur.execute("INSERT INTO pastries (name,category,price,quantity,date_added,last_updated) VALUES (?,?,?,?,?,?)",
-                        (self.name.get(), self.category.get(), price_val, qty_val, now_iso(), now_iso()))
-        con.commit();con.close()
-        self.destroy(); self.master.load_inventory(); self.master.refresh_catalog()
+            cur.execute(
+                "INSERT INTO pastries (name, category, price, quantity, date_added, last_updated) VALUES (?,?,?,?,?,?)",
+                (name, category, price_val, qty_val, now_iso(), now_iso()),
+            )
+
+        con.commit()
+        con.close()
+
+        messagebox.showinfo("Success", f"'{name}' saved successfully!")
+        self.destroy()
+        self.master.load_inventory()
+        self.master.refresh_catalog()
 
 # ---------------- User Form ----------------
 class UserForm(tk.Toplevel):

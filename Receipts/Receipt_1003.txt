@@ -1,0 +1,18 @@
+MambaMunchies Bakery POS
+Receipt #: 1003
+Date: 2025-10-02 14:21:45
+Staff: admin
+Customer: Romeo
+
+Items:
+ - Danish  x1  @ ₱55.00  = ₱55.00
+ - Banana Bread  x1  @ ₱35.00  = ₱35.00
+ - Glazed Donut  x1  @ ₱25.00  = ₱25.00
+ - Apple Pie  x1  @ ₱50.00  = ₱50.00
+
+Subtotal: ₱165.00
+Discount: ₱0.00
+Tax (3.00%): ₱4.95
+TOTAL: ₱169.95
+Tendered: ₱200.00
+Change: ₱30.05

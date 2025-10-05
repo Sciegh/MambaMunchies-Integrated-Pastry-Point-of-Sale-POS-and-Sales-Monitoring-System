@@ -431,10 +431,18 @@ class App(tk.Tk):
         ttk.Label(self.totals_frame, text="Subtotal:").grid(row=r, column=0, sticky="e", padx=4, pady=2)
         ttk.Label(self.totals_frame, textvariable=self.subtotal_var, name="subtotal_lbl").grid(row=r, column=1, sticky="w")
         r += 1
-        ttk.Label(self.totals_frame, text="Discount (₱):").grid(row=r, column=0, sticky="e", padx=4, pady=2)
-        ttk.Entry(self.totals_frame, textvariable=self.discount_var, width=10).grid(row=r, column=1, sticky="w")
-        ttk.Label(self.totals_frame, text="Tax (%):").grid(row=r, column=2, sticky="e", padx=4)
-        ttk.Entry(self.totals_frame, textvariable=self.tax_var, width=6).grid(row=r, column=3, sticky="w")
+        # Discount dropdown
+        self.discount_type_var = tk.StringVar(value="None")
+        ttk.Label(self.totals_frame, text="Discount:").grid(row=r, column=0, sticky="e", padx=4, pady=2)
+        ttk.Combobox(
+            self.totals_frame, textvariable=self.discount_type_var,
+            values=["None", "Senior", "PWD"], state="readonly", width=12
+        ).grid(row=r, column=1, sticky="w")
+
+        # Fixed tax (3%)
+        self.tax_var.set(3.0)
+        ttk.Label(self.totals_frame, text="Tax:").grid(row=r, column=2, sticky="e", padx=4)
+        ttk.Label(self.totals_frame, text="3%").grid(row=r, column=3, sticky="w")
         r += 1
         ttk.Label(self.totals_frame, text="Total:").grid(row=r, column=0, sticky="e", padx=4, pady=2)
         ttk.Label(self.totals_frame, textvariable=self.total_var, name="total_lbl", font=("Segoe UI", 14, "bold")).grid(row=r, column=1, sticky="w")
@@ -583,8 +591,8 @@ class App(tk.Tk):
 
     def clear_cart(self):
         self.cart_tree.delete(*self.cart_tree.get_children())
-        self.discount_var.set(0.0)
-        self.tax_var.set(0.0)
+        self.discount_type_var.set("None")
+        self.tax_var.set(3.0)
         self.tender_var.set(0.0)
         self.change_var.set(0.0)
         self.customer_var.set("")
@@ -595,8 +603,17 @@ class App(tk.Tk):
         for iid in self.cart_tree.get_children():
             vals = self.cart_tree.item(iid, "values")
             subtotal += float(vals[1]) * int(vals[2])
-        discount = max(0.0, float(self.discount_var.get() or 0.0))
-        tax_pct = max(0.0, float(self.tax_var.get() or 0.0))
+
+        # Discount rules
+        discount_type = self.discount_type_var.get()
+        if discount_type in ("Senior", "PWD"):
+            discount = subtotal * 0.20   # 20% discount
+        else:
+            discount = 0.0
+
+        # Always 3% tax
+        tax_pct = 3.0
+
         taxed = max(0.0, (subtotal - discount)) * (tax_pct/100.0)
         total = max(0.0, subtotal - discount + taxed)
         tender = float(self.tender_var.get() or 0.0)
@@ -1033,6 +1050,8 @@ class LoginWindow(tk.Tk):
             self.destroy(); App(self.user.get(),r[0]).mainloop()
         else:
             messagebox.showerror("Login","Invalid credentials")
+
+
 
 # ---------------- Main ----------------
 if __name__=="__main__":

@@ -308,7 +308,7 @@ class App(tk.Tk):
 
         self.title("🍰 MambaMunchies")
         self.geometry("1200x780")
-        self.minsize(1920, 1080)
+        self.minsize(1520, 880)
 
         for i in range(6):
             self.rowconfigure(i, weight=1)
@@ -399,7 +399,7 @@ class App(tk.Tk):
         cart_box.pack(fill="y", padx=2, pady=2)
 
         cols = ("Item", "Price", "Qty", "Total")
-        self.cart_tree = ttk.Treeview(cart_box, columns=cols, show="headings", height=18)
+        self.cart_tree = ttk.Treeview(cart_box, columns=cols, show="headings", height=12)
         for c in cols:
             self.cart_tree.heading(c, text=c)
         self.cart_tree.column("Item", width=180)
@@ -438,10 +438,13 @@ class App(tk.Tk):
         # Discount dropdown
         self.discount_type_var = tk.StringVar(value="None")
         ttk.Label(self.totals_frame, text="Discount:").grid(row=r, column=0, sticky="e", padx=4, pady=2)
-        ttk.Combobox(
+        discount_box = ttk.Combobox(
             self.totals_frame, textvariable=self.discount_type_var,
             values=["None", "Senior", "PWD"], state="readonly", width=12
-        ).grid(row=r, column=1, sticky="w")
+        )
+        discount_box.grid(row=r, column=1, sticky="w")
+        discount_box.bind("<<ComboboxSelected>>", lambda e: self.update_totals())
+
 
         # Fixed tax (3%)
         self.tax_var.set(3.0)
@@ -615,6 +618,8 @@ class App(tk.Tk):
         else:
             discount = 0.0
 
+        self.discount_var.set(discount)
+
         # Always 3% tax
         tax_pct = 3.0
 
@@ -625,6 +630,7 @@ class App(tk.Tk):
         self.subtotal_var.set(subtotal)
         self.total_var.set(total)
         self.change_var.set(change)
+        self.discount_var.set(discount)
         # Update labels by widget name
         self.totals_frame.nametowidget("subtotal_lbl").configure(text=money(subtotal))
         self.totals_frame.nametowidget("total_lbl").configure(text=money(total))
@@ -942,16 +948,16 @@ class App(tk.Tk):
             cur.execute("DELETE FROM users WHERE id=?",(uid,))
             con.commit(); con.close(); self.load_users()
 
-# ---------------- Pastry Form ----------------
 class PastryForm(tk.Toplevel):
     def __init__(self, master:App, pastry_id):
         super().__init__(master)
+        self.master = master
         self.pastry_id = pastry_id
         self.title("Add / Edit Pastry")
         self.geometry("400x360")
         self.resizable(True, True)
 
-                # Category selection
+        # Category selection
         ttk.Label(self, text="Category:").pack(pady=4)
         self.category = tk.StringVar()
         self.cat_cb = ttk.Combobox(self, textvariable=self.category,
@@ -964,53 +970,76 @@ class PastryForm(tk.Toplevel):
         self.product_cb = ttk.Combobox(self, textvariable=self.name, state="readonly")
         self.product_cb.pack(fill="x", padx=6)
 
-        # Update products when category changes
-        def update_products(event):
+        def update_products(event=None):
             cat = self.category.get()
             products = CATEGORY_ITEMS.get(cat, [])
             self.product_cb["values"] = products
             if products:
-                self.product_cb.current(0)  # auto-select first item
+                self.product_cb.current(0)
 
         self.cat_cb.bind("<<ComboboxSelected>>", update_products)
 
-        ttk.Label(self,text="Price:").pack(pady=4)
-        self.price=tk.DoubleVar(value=5.00); ttk.Entry(self,textvariable=self.price).pack(fill="x",padx=6)
-        ttk.Label(self,text="Quantity:").pack(pady=4)
-        self.qty=tk.IntVar(value=1); ttk.Entry(self,textvariable=self.qty).pack(fill="x",padx=6)
-        ttk.Button(self,text="Save",style="Accent.TButton",command=self.save).pack(pady=8)
+        ttk.Label(self, text="Price:").pack(pady=4)
+        self.price = tk.DoubleVar(value=5.00)
+        ttk.Entry(self, textvariable=self.price).pack(fill="x", padx=6)
+
+        ttk.Label(self, text="Quantity:").pack(pady=4)
+        self.qty = tk.IntVar(value=1)
+        ttk.Entry(self, textvariable=self.qty).pack(fill="x", padx=6)
+
+        ttk.Button(self, text="Save", style="Accent.TButton", command=self.save).pack(pady=8)
+
         if pastry_id:
-            con=db_connect();cur=con.cursor();cur.execute("SELECT name,category,price,quantity FROM pastries WHERE id=?",(pastry_id,))
-            r=cur.fetchone();con.close()
-            if r: self.name.set(r[0]); self.cat.set(r[1]); self.price.set(r[2]); self.qty.set(r[3])
+            con = db_connect(); cur = con.cursor()
+            cur.execute("SELECT name, category, price, quantity FROM pastries WHERE id=?", (pastry_id,))
+            r = cur.fetchone(); con.close()
+            if r:
+                self.category.set(r[1])
+                update_products()
+                self.name.set(r[0])
+                self.price.set(r[2])
+                self.qty.set(r[3])
 
- # --------------------------------------------------------
     def save(self):
-        name = self.name.get().strip()
-        category = self.category.get()
+        # VALIDATION
         try:
-            price_val = float(self.price.get())
-            qty_val = int(self.qty.get())
-        except Exception:
-            messagebox.showerror("Invalid Input", "Please enter valid numeric values for price and quantity.")
+            price = float(self.price.get())
+            qty = int(self.qty.get())
+        except:
+            messagebox.showerror("Invalid Input", "Price and Quantity must be numbers.")
+            self.destroy()
             return
 
-        # ---------------- Validations ----------------
-        if not category:
-            messagebox.showwarning("Missing Category", "Please select a category.")
-            return
-        if not name:
-            messagebox.showwarning("Missing Name", "Please select a pastry name.")
-            return
-        if price_val < 5:
-            messagebox.showwarning("Invalid Price", "Minimum price is ₱5.00.")
-            return
-        if qty_val < 1:
-            messagebox.showwarning("Invalid Quantity", "Quantity must be at least 1.")
+        if not (0 < price <= 100):
+            messagebox.showerror("Invalid Price", "Price must be between 5 and 100.")
+            self.destroy()
             return
 
-        con = db_connect()
-        cur = con.cursor()
+        if not (1 <= qty <= 100):
+            messagebox.showerror("Invalid Quantity", "Quantity must be between 1 and 100.")
+            self.destroy()
+            return
+
+        if not self.category.get() or not self.name.get():
+            messagebox.showerror("Missing Data", "Please select both category and name.")
+            self.destroy()
+            return
+
+        # INSERT OR UPDATE
+        con = db_connect(); cur = con.cursor()
+
+        if self.pastry_id:
+            cur.execute("UPDATE pastries SET name=?, category=?, price=?, quantity=?, last_updated=CURRENT_TIMESTAMP WHERE id=?",
+                        (self.name.get(), self.category.get(), price, qty, self.pastry_id))
+        else:
+            cur.execute("INSERT INTO pastries (name, category, price, quantity, last_updated) VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)",
+                        (self.name.get(), self.category.get(), price, qty))
+
+        con.commit(); con.close()
+
+        self.master.load_inventory()
+        self.master.refresh_catalog()
+        self.destroy()
 
         # ---------------- Duplicate Check ----------------
         cur.execute("SELECT id FROM pastries WHERE name=? COLLATE NOCASE", (name,))

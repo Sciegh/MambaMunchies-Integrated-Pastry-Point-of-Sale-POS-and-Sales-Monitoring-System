@@ -687,7 +687,6 @@ class App(tk.Tk):
         ttk.Button(top, text="Add Pastry", style="Accent.TButton", command=self.add_pastry).pack(side="left", padx=3)
         ttk.Button(top, text="Edit", style="Soft.TButton", command=self.edit_pastry).pack(side="left", padx=3)
         ttk.Button(top, text="Delete", style="Soft.TButton", command=self.delete_pastry).pack(side="left", padx=3)
-        # Removed Export CSV per request
 
         cols = ("ID","Name","Category","Price","Quantity","Last Updated")
         self.inv_tree = ttk.Treeview(frm, columns=cols, show="headings")

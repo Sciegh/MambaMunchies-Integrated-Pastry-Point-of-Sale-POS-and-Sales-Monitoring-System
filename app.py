@@ -26,12 +26,19 @@ try:
     from reportlab.lib.styles import getSampleStyleSheet
     from reportlab.platypus import Table, TableStyle, Paragraph, Image as RLImage, Spacer
     from reportlab.lib import colors as rl_colors
+    from reportlab.pdfbase import pdfmetrics
+    from reportlab.pdfbase.ttfonts import TTFont
     REPORTLAB_AVAILABLE = True
 except Exception:
     REPORTLAB_AVAILABLE = False
 
 try:
-    import qrcode
+    pdfmetrics.registerFont(TTFont("DejaVuSans", "DejaVuSans.ttf"))
+    FONT_NORMAL = "DejaVuSans"
+except:
+    FONT_NORMAL = "Helvetica"  # fallback if font file not found
+
+try:
     QRCODE_AVAILABLE = True
 except Exception:
     QRCODE_AVAILABLE = False
@@ -180,7 +187,7 @@ class App(tk.Tk):
             cur.execute("DELETE FROM pastries WHERE id=?", (pastry_id,))
             con.commit()
             con.close()
-            self.refresh_inventory()
+            self.load_inventory()
             messagebox.showinfo("Deleted", f"'{pastry_name}' was deleted successfully.")
 
     def logout(self):
@@ -558,7 +565,6 @@ class App(tk.Tk):
         self.clear_cart()
         messagebox.showinfo("Payment complete", f"Receipt #{receipt_no}\nChange: {money(change)}")
 
-        # Save receipt as PDF (new behavior)
         self.save_receipt_to_pdf(receipt_no)
 
     def print_last_receipt(self):
@@ -570,7 +576,7 @@ class App(tk.Tk):
     def save_receipt_to_pdf(self, receipt_no: int):
         if not REPORTLAB_AVAILABLE:
             self.save_receipt_to_txt(receipt_no)
-            messagebox.showwarning("Dependency missing", "reportlab is required to create PDF receipts. Saved as TXT instead. To enable PDF receipts run: pip install reportlab qrcode pillow")
+            messagebox.showwarning("Dependency missing", "reportlab is required to create PDF receipts. Saved as TXT instead.")
             return
 
         con = db_connect(); cur = con.cursor()
@@ -583,92 +589,148 @@ class App(tk.Tk):
         items = cur.fetchall()
         con.close()
 
+        # --- PDF setup ---
+        from reportlab.lib.pagesizes import A5
         filename = os.path.join(RECEIPTS_DIR, f"Receipt_{receipt_no}.pdf")
-        c = rl_canvas.Canvas(filename, pagesize=A4)
-        w, h = A4
-        y = h - 40*mm
-        
-        # --- Logo ---
+        c = rl_canvas.Canvas(filename, pagesize=A5)
+        w, h = A5
+
+        # --- Background image ---
+        bg_fp = os.path.join(BASE_DIR, "background.jpg")
+        if os.path.exists(bg_fp):
+            try:
+                bg_img = rl_utils.ImageReader(bg_fp)
+                iw, ih = bg_img.getSize()
+                aspect = ih / iw
+                # Fill the entire A5 page
+                c.drawImage(bg_img, 0, 0, width=w, height=h, preserveAspectRatio=False, mask='auto')
+            except Exception as e:
+                print("Background image error:", e)
+        else:
+            # fallback color if background missing
+            c.setFillColorRGB(1, 0.9, 0.95)
+            c.rect(0, 0, w, h, fill=True, stroke=False)
+
+
+        # Watermark logo in center
         logo_fp = os.path.join(BASE_DIR, "logo.jpg")
-        logo_height = 0
         if os.path.exists(logo_fp):
             try:
                 img = rl_utils.ImageReader(logo_fp)
                 iw, ih = img.getSize()
                 aspect = ih / iw
-                draw_w = 35*mm
-                draw_h = draw_w * aspect
-                c.drawImage(img, 20*mm, y - draw_h, width=draw_w, height=draw_h, mask='auto')
-                logo_height = draw_h + 10
-                y -= logo_height
+                size = 90 * mm
+                c.drawImage(img, (w - size)/2, (h - size)/2, width=size, height=size*aspect, mask='auto', preserveAspectRatio=True, anchor='c')
+                c.setFillAlpha(0.15)
             except Exception as e:
-                print("Logo error:", e)
+                print("Watermark error:", e)
+        c.setFillAlpha(1)
 
-        # --- Header ---
-        y -= logo_height
-        c.setFont("Helvetica-Bold", 16)
-        c.drawString(60*mm, y, "MambaMunchies Bakery")
+        # Header
+        y = h - 30
+        c.setFont("Helvetica-Bold", 14)
+        c.setFillColorRGB(0.4, 0.1, 0.2)
+        c.drawCentredString(w/2, y, "MambaMunchies Bakery")
+        y -= 18
         c.setFont("Helvetica", 9)
-        c.drawString(60*mm, y - 12, f"Receipt #: {receipt_no}")
-        c.drawString(60*mm, y - 24, f"Date: {created_at}")
-        c.drawString(60*mm, y - 36, f"Staff: {staff}")
-        if cust:
-            c.drawString(60*mm, y - 48, f"Customer: {cust}")
-        y -= 70
+        c.setFillColor(rl_colors.black)
+        c.drawCentredString(w/2, y, "Official Sales Receipt")
+        y -= 30
 
-        # --- Table ---
+        # Details
+        c.setFont("Helvetica", 9)
+        c.drawString(25, y, f"Receipt #: {receipt_no}")
+        c.drawString(25, y - 12, f"Date: {created_at}")
+        c.drawString(25, y - 24, f"Cashier: {staff}")
+        if cust:
+            c.drawString(25, y - 36, f"Customer: {cust}")
+        y -= 55
+
+        # Table
         data = [["Item", "Unit", "Qty", "Total"]] + [[n, money(p), str(q), money(t)] for n, p, q, t in items]
-        tbl = Table(data, colWidths=[80*mm, 30*mm, 20*mm, 30*mm])
+        tbl = Table(data, colWidths=[75*mm, 20*mm, 15*mm, 25*mm])
         tbl.setStyle(TableStyle([
-            ("BACKGROUND", (0,0), (-1,0), rl_colors.lightgrey),
+            ("BACKGROUND", (0,0), (-1,0), rl_colors.lightpink),
+            ("TEXTCOLOR", (0,0), (-1,0), rl_colors.black),
             ("GRID", (0,0), (-1,-1), 0.25, rl_colors.grey),
-            ("FONT", (0,0), (-1,0), "Helvetica-Bold")
+            ("FONT", (0,0), (-1,0), "Helvetica-Bold"),
+            ("FONT", (0,1), (-1,-1), "Helvetica"),
+            ("ALIGN", (1,1), (-1,-1), "RIGHT"),
         ]))
         table_h = len(data) * 12
         tbl.wrapOn(c, w, h)
-        tbl.drawOn(c, 20*mm, y - table_h)
+        tbl.drawOn(c, 20, y - table_h)
         y -= table_h + 20
 
-        # --- Totals ---
+        # Totals section
         c.setFont("Helvetica-Bold", 10)
-        c.drawString(20*mm, y, f"Subtotal: {money(subtotal)}")
-        c.drawString(20*mm, y - 12, f"Discount: {money(disc)}")
-        c.drawString(20*mm, y - 24, f"Tax: {money(tax)}")
-        c.drawString(20*mm, y - 36, f"Total: {money(total)}")
-        c.drawString(20*mm, y - 48, f"Tendered: {money(tender)}")
-        c.drawString(20*mm, y - 60, f"Change: {money(change)}")
-        y -= 80
+        lines = [
+            ("Subtotal", subtotal),
+            ("Discount", disc),
+            ("Tax", tax),
+            ("Total", total),
+            ("Tendered", tender),
+            ("Change", change)
+        ]
+        for label, val in lines:
+            c.drawRightString(w - 30, y, f"{label}: {money(val)}")
+            y -= 12
 
-        # --- QR Code ---
+        # --- Build detailed text for QR ---
+        qr_text = [
+            "MambaMunchies Bakery",
+            f"Receipt #{receipt_no}",
+            f"Date: {created_at}",
+            f"Cashier: {staff}",
+        ]
+        if cust:
+            qr_text.append(f"Customer: {cust}")
+        qr_text.append("\nItems:")
+        for n, p, q, t in items:
+            qr_text.append(f"- {n} ({q} × {money(p)}) = {money(t)}")
+        qr_text.append("")
+        qr_text.append(f"Subtotal: {money(subtotal)}")
+        qr_text.append(f"Discount: {money(disc)}")
+        qr_text.append(f"Tax: {money(tax)}")
+        qr_text.append(f"Total: {money(total)}")
+        qr_text.append(f"Tendered: {money(tender)}")
+        qr_text.append(f"Change: {money(change)}")
+        qr_text.append("")
+        qr_text.append("Thank you for shopping at MambaMunchies 💕")
+
+        qr_data = "\n".join(qr_text)
+
+        # Generate QR code
         try:
-            qr_data = {
-                "receipt_no": receipt_no,
-                "date": created_at,
-                "total": total,
-                "items": [{"name": i[0], "qty": i[2]} for i in items]
-            }
-            qr = qrcode.QRCode(box_size=3, border=1)
-            qr.add_data(str(qr_data))
+            qr = qrcode.QRCode(
+                version=None,
+                box_size=6,  # bigger modules for higher density
+                border=2
+            )
+            qr.add_data(qr_data)
             qr.make(fit=True)
-    
-            # Generate black-on-white QR
             qr_img = qr.make_image(fill_color="black", back_color="white").convert("RGB")
-    
+
             buf = io.BytesIO()
             qr_img.save(buf, format="PNG")
             buf.seek(0)
-    
-            c.drawImage(ImageReader(buf), 160*mm, 100*mm, width=35*mm, height=35*mm)
-            c.setFont("Helvetica", 8)
-            c.drawString(160*mm, 95*mm, "Scan for summary")
-            print(f"✅ QR code successfully added to receipt #{receipt_no}")
-        except Exception as e:
-            print("⚠️ QR Error:", e)
 
+            qr_size = 80  # increased size in points (was 40)
+            c.drawImage(ImageReader(buf), w - qr_size - 25, 25, width=qr_size, height=qr_size)
+            c.setFont("Helvetica", 8)
+            c.drawString(w - qr_size - 10, 20, "📷 Scan to view receipt")
+        except Exception as e:
+            print("QR code error:", e)
+
+
+        # Footer
+        c.setFont("Helvetica-Oblique", 8)
+        c.setFillColorRGB(0.3, 0.1, 0.1)
+        c.drawCentredString(w/2, 15, "Thank you for shopping at MambaMunchies! 💕")
         c.showPage()
         c.save()
 
-        # Auto-open
+        # Auto-open file
         try:
             if os.name == 'nt':
                 os.startfile(filename)
@@ -676,8 +738,7 @@ class App(tk.Tk):
                 subprocess.Popen(['xdg-open', filename])
         except Exception:
             pass
-
-        messagebox.showinfo("Receipt PDF", f"Receipt saved to: {filename}")
+        messagebox.showinfo("Receipt Saved", f"Receipt saved to {filename}")
 
     # ---------------- Inventory ----------------
     def build_inventory_tab(self):
@@ -762,97 +823,134 @@ class App(tk.Tk):
             self.rep_tree.insert("","end",values=row)
         con.close()
 
+        # ---------------- REPORT DATA GENERATION ----------------
+    def generate_report_data(self):
+        """Fetch detailed sales data joined with pastry info for the report."""
+        con = db_connect()
+        cur = con.cursor()
+        cur.execute("""
+            SELECT 
+                p.name AS item_name,
+                s.unit_price,
+                s.qty,
+                s.total,
+                s.sale_time,
+                s.staff_username
+            FROM sales s
+            JOIN pastries p ON s.pastry_id = p.id
+            ORDER BY s.sale_time DESC
+        """)
+        data = cur.fetchall()
+        con.close()
+        return data
+
+    def generate_summary(self, report_data):
+        """Compute totals and most popular product from fetched data."""
+        if not report_data:
+            return {
+                "total_sales": 0.0,
+                "total_items": 0,
+                "most_popular": "N/A"
+            }
+
+        total_sales = sum(row[3] for row in report_data)
+        total_items = sum(row[2] for row in report_data)
+
+        # Most popular product by total quantity sold
+        from collections import Counter
+        counter = Counter()
+        for item_name, unit_price, qty, total, sale_time, staff in report_data:
+            counter[item_name] += qty
+        most_popular = counter.most_common(1)[0][0] if counter else "N/A"
+
+        return {
+            "total_sales": total_sales,
+            "total_items": total_items,
+            "most_popular": most_popular
+        }
+
     def export_reports_pdf(self):
-        if not REPORTLAB_AVAILABLE:
-            messagebox.showerror("Missing dependency", "reportlab is required to export PDF reports. Install it with: pip install reportlab")
-            return
+        from reportlab.lib import colors
+        from reportlab.lib.pagesizes import letter
+        from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+        from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Image, PageBreak
+        from reportlab.lib.units import inch
+        import os
+        from datetime import datetime
 
-        rows = [self.rep_tree.item(r)["values"] for r in self.rep_tree.get_children()]
-        filename = os.path.join(EXPORTS_DIR, f"Report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf")
+        report_data = self.generate_report_data()
+        summary = self.generate_summary(report_data)
 
+        EXPORTS_DIR = os.path.join(os.getcwd(), "EXPORTS")
+        os.makedirs(EXPORTS_DIR, exist_ok=True)
+        filename = os.path.join(EXPORTS_DIR, f"Sales_Report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf")
+
+        doc = SimpleDocTemplate(filename, pagesize=letter,
+                                leftMargin=40, rightMargin=40, topMargin=60, bottomMargin=40)
+        elements = []
+        styles = getSampleStyleSheet()
+
+        # ---------------- Header ----------------
+        logo_path = os.path.join("assets", "logo.png")
+        if os.path.exists(logo_path):
+            elements.append(Image(logo_path, width=1.2*inch, height=1.2*inch))
+        elements.append(Spacer(1, 8))
+
+        styles.add(ParagraphStyle(name="HeaderTitle", fontSize=20, leading=24, textColor=colors.HexColor("#D17A22"), spaceAfter=12))
+        elements.append(Paragraph("<b>MambaMunchies Sales Report</b>", styles["HeaderTitle"]))
+        elements.append(Paragraph(datetime.now().strftime("Generated on %B %d, %Y %I:%M %p"), styles["Normal"]))
+        elements.append(Spacer(1, 12))
+
+        # ---------------- Table ----------------
+        data = [["Item", "Unit Price", "Qty", "Total", "Date", "Staff"]] + [
+            [r[0], f"₱{r[1]:.2f}", str(r[2]), f"₱{r[3]:.2f}", r[4], r[5]] for r in report_data
+        ]
+
+        table = Table(data, repeatRows=1, colWidths=[120, 60, 40, 60, 110, 80])
+        table.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#FCEFEF")),
+            ("TEXTCOLOR", (0, 0), (-1, 0), colors.HexColor("#333333")),
+            ("ALIGN", (1, 1), (-1, -1), "CENTER"),
+            ("GRID", (0, 0), (-1, -1), 0.25, colors.grey),
+            ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+            ("FONTSIZE", (0, 0), (-1, -1), 8),
+            ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.whitesmoke, colors.HexColor("#FFF9F7")]),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+        ]))
+
+        elements.append(table)
+        elements.append(Spacer(1, 16))
+
+        # ---------------- Summary ----------------
+        styles.add(ParagraphStyle(name="SummaryHeader", fontSize=14, leading=16, textColor=colors.HexColor("#D17A22"), spaceAfter=6))
+        styles.add(ParagraphStyle(name="SummaryBody", fontSize=11, leading=14, leftIndent=15))
+
+        elements.append(Paragraph("<b>Summary</b>", styles["SummaryHeader"]))
+        elements.append(Paragraph(f"Total Items Sold: {summary['total_items']}", styles["SummaryBody"]))
+        elements.append(Paragraph(f"Total Sales: ₱{summary['total_sales']:.2f}", styles["SummaryBody"]))
+        elements.append(Paragraph(f"Most Popular Product: {summary['most_popular']}", styles["SummaryBody"]))
+        elements.append(Spacer(1, 24))
+
+        # ---------------- QR ----------------
+        qr_path = os.path.join("assets", "qr.png")
+        if os.path.exists(qr_path):
+            elements.append(Image(qr_path, width=1*inch, height=1*inch))
+            elements.append(Spacer(1, 12))
+
+        # Add automatic page breaks for large tables
+        if len(data) > 40:
+            elements.insert(40, PageBreak())
+
+        doc.build(elements)
+        messagebox.showinfo("Report Exported", f"Report saved to {filename}")
         try:
-            c = rl_canvas.Canvas(filename, pagesize=A4)
-            w, h = A4
-            y = h - 30*mm
-
-            # --- Draw logo ---
-            logo_fp = os.path.join(BASE_DIR, "logo.jpg")
-            logo_height = 0
-            if os.path.exists(logo_fp):
-                try:
-                    img = rl_utils.ImageReader(logo_fp)
-                    iw, ih = img.getSize()
-                    aspect = ih / iw
-                    draw_w = 35*mm
-                    draw_h = draw_w * aspect
-                    c.drawImage(img, 20*mm, y - draw_h, width=draw_w, height=draw_h, mask='auto')
-                    logo_height = draw_h + 10  # spacing below logo
-                except Exception as e:
-                    print("Logo error:", e)
-
-            # --- Header text (shifted down) ---
-            y -= logo_height
-            c.setFont("Helvetica-Bold", 16)
-            c.drawString(60*mm, y, "MambaMunchies Sales Report")
-            c.setFont("Helvetica", 10)
-            c.drawString(60*mm, y - 14, f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-            y -= 40
-
-            # --- Table of receipts ---
-            data = [["Date", "Receipt#", "Staff", "Customer", "Total"]] + rows
-            tbl = Table(data, colWidths=[60*mm, 30*mm, 30*mm, 40*mm, 20*mm])
-            tbl.setStyle(TableStyle([
-                ("BACKGROUND", (0,0), (-1,0), rl_colors.lightgrey),
-                ("GRID", (0,0), (-1,-1), 0.25, rl_colors.grey),
-                ("FONT", (0,0), (-1,0), "Helvetica-Bold")
-            ]))
-            table_h = len(data) * 12
-            tbl.wrapOn(c, w, h)
-            tbl.drawOn(c, 20*mm, y - table_h)
-            y -= table_h + 20
-
-            # --- Analytics section ---
-            con = db_connect(); cur = con.cursor()
-            cur.execute("SELECT SUM(total) FROM receipts WHERE date(created_at) BETWEEN ? AND ?", (self.rep_from.get(), self.rep_to.get()))
-            total_sales = cur.fetchone()[0] or 0.0
-            cur.execute("SELECT COUNT(*) FROM receipts WHERE date(created_at) BETWEEN ? AND ?", (self.rep_from.get(), self.rep_to.get()))
-            tx_count = cur.fetchone()[0] or 0
-            cur.execute("SELECT name, SUM(qty) as s FROM receipt_items WHERE date((SELECT created_at FROM receipts WHERE id=receipt_items.receipt_id)) BETWEEN ? AND ? GROUP BY name ORDER BY s DESC LIMIT 5", (self.rep_from.get(), self.rep_to.get()))
-            top = cur.fetchall()
-            cur.execute("SELECT COUNT(*) FROM pastries WHERE quantity < ?", (LOW_STOCK_THRESHOLD,))
-            low_count = cur.fetchone()[0]
-            con.close()
-
-            c.setFont("Helvetica-Bold", 12)
-            c.drawString(20*mm, y, "Summary Analytics")
-            c.setFont("Helvetica", 10)
-            c.drawString(20*mm, y - 14, f"Total Sales: {money(total_sales)}")
-            c.drawString(20*mm, y - 28, f"Total Transactions: {tx_count}")
-            c.drawString(20*mm, y - 42, f"Low-stock Items (< {LOW_STOCK_THRESHOLD}): {low_count}")
-            y -= 70
-
-            c.setFont("Helvetica-Bold", 11)
-            c.drawString(20*mm, y, "Most Popular Products")
-            c.setFont("Helvetica", 10)
-            y -= 14
-            if top:
-                for name, s in top:
-                    c.drawString(24*mm, y, f"- {name}: {s} sold")
-                    y -= 12
+            if os.name == 'nt':
+                os.startfile(filename)
             else:
-                c.drawString(24*mm, y, "No product sales in range.")
+                subprocess.Popen(['xdg-open', filename])
+        except Exception:
+            pass
 
-            c.showPage()
-            c.save()
-
-            # Auto-open
-            try:
-                if os.name == 'nt':
-                    os.startfile(filename)
-                else:
-                    subprocess.Popen(['xdg-open', filename])
-            except Exception:
-                pass
 
             messagebox.showinfo("Report Exported", f"Saved report to:\n{filename}")
         except Exception as e:

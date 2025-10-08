@@ -637,15 +637,6 @@ class App(tk.Tk):
         c.drawCentredString(w/2, y, "Official Sales Receipt")
         y -= 30
 
-        # Details
-        c.setFont("Helvetica", 9)
-        c.drawString(25, y, f"Receipt #: {receipt_no}")
-        c.drawString(25, y - 12, f"Date: {created_at}")
-        c.drawString(25, y - 24, f"Cashier: {staff}")
-        if cust:
-            c.drawString(25, y - 36, f"Customer: {cust}")
-        y -= 55
-
         # Table
         data = [["Item", "Unit", "Qty", "Total"]] + [[n, money(p), str(q), money(t)] for n, p, q, t in items]
         tbl = Table(data, colWidths=[75*mm, 20*mm, 15*mm, 25*mm])
@@ -661,6 +652,15 @@ class App(tk.Tk):
         tbl.wrapOn(c, w, h)
         tbl.drawOn(c, 20, y - table_h)
         y -= table_h + 20
+
+        # Details
+        c.setFont("Helvetica", 9)
+        c.drawString(25, y, f"Receipt #: {receipt_no}")
+        c.drawString(25, y - 12, f"Date: {created_at}")
+        c.drawString(25, y - 24, f"Cashier: {staff}")
+        if cust:
+            c.drawString(25, y - 36, f"Customer: {cust}")
+        y -= 55
 
         # Totals section
         c.setFont("Helvetica-Bold", 10)
@@ -704,7 +704,7 @@ class App(tk.Tk):
         try:
             qr = qrcode.QRCode(
                 version=None,
-                box_size=6,  # bigger modules for higher density
+                box_size=2,  # bigger modules for higher density
                 border=2
             )
             qr.add_data(qr_data)
@@ -715,7 +715,7 @@ class App(tk.Tk):
             qr_img.save(buf, format="PNG")
             buf.seek(0)
 
-            qr_size = 80  # increased size in points (was 40)
+            qr_size = 150  # increased size in points (was 40)
             c.drawImage(ImageReader(buf), w - qr_size - 25, 25, width=qr_size, height=qr_size)
             c.setFont("Helvetica", 8)
             c.drawString(w - qr_size - 10, 20, "📷 Scan to view receipt")

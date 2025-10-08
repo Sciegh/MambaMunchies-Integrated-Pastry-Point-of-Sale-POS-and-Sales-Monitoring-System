@@ -8,10 +8,17 @@ class LoginWindow(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("🍰 MambaMunchies — Login")
-        self.geometry("500x350")
+        self.geometry("500x450")
+        self.configure(bg="#FFF7F3")  # Soft pastel background
 
-        title = ttk.Label(self, text="MambaMunchies", font=("Segoe UI", 16, "bold"))
-        title.pack(pady=(10, 5))
+        title = tk.Label(
+            self,
+            text="🍰 MambaMunchies",
+            font=("Comic Sans MS", 22, "bold"),
+            bg="#FFF7F3",
+            fg="#D36B82"
+        )
+        title.pack(pady=(25, 5))
 
         try:
             logo_img = Image.open("logo.jpg").resize((120, 120))
@@ -23,18 +30,48 @@ class LoginWindow(tk.Tk):
         self.user = tk.StringVar()
         self.pw = tk.StringVar()
 
-        ttk.Label(self, text="Username:").pack(pady=2)
-        ttk.Entry(self, textvariable=self.user).pack(fill="x", padx=30)
+        # ===== LOGIN CARD =====
+        self.user = tk.StringVar()
+        self.pw = tk.StringVar()
 
-        ttk.Label(self, text="Password:").pack(pady=2)
-        ttk.Entry(self, textvariable=self.pw, show="*").pack(fill="x", padx=30)
+        card = tk.Frame(self, bg="#FFE6EB", bd=0, highlightthickness=2, highlightbackground="#F4C2C2")
+        card.pack(pady=15, padx=50, fill="x", ipadx=10, ipady=10)
 
-        ttk.Button(
-            self,
-            text="Login",
-            style="Accent.TButton",
+        # Username
+        user_frame = tk.Frame(card, bg="#FFE6EB")
+        user_frame.pack(fill="x", padx=20, pady=(5, 5))
+        tk.Label(user_frame, text="👩‍💻 Username", font=("Segoe UI", 10, "bold"), bg="#FFE6EB", fg="#A64D79").pack(anchor="w")
+        user_entry = ttk.Entry(user_frame, textvariable=self.user, font=("Segoe UI", 10))
+        user_entry.pack(fill="x", pady=(3, 0))
+
+        # Password
+        pw_frame = tk.Frame(card, bg="#FFE6EB")
+        pw_frame.pack(fill="x", padx=20, pady=(5, 10))
+        tk.Label(pw_frame, text="🔒 Password", font=("Segoe UI", 10, "bold"), bg="#FFE6EB", fg="#A64D79").pack(anchor="w")
+        pw_entry = ttk.Entry(pw_frame, textvariable=self.pw, show="*", font=("Segoe UI", 10))
+        pw_entry.pack(fill="x", pady=(3, 0))
+
+        # ===== Login Button =====
+        style = ttk.Style()
+        style.configure(
+            "Cute.TButton",
+            font=("Segoe UI", 10, "bold"),
+            foreground="#A64D79",
+            background="#E48296",
+            padding=8
+        )
+        style.map(
+            "Cute.TButton",
+            background=[("active", "#E48296"), ("pressed", "#C95B70")]
+        )
+
+        login_btn = ttk.Button(
+            card,
+            text="Login 🍩",
+            style="Cute.TButton",
             command=self.do_login
-        ).pack(pady=10)
+        )
+        login_btn.pack(pady=5, ipadx=5)
 
     def do_login(self):
         con = db_connect()

@@ -823,7 +823,6 @@ class App(tk.Tk):
             self.rep_tree.insert("","end",values=row)
         con.close()
 
-        # ---------------- REPORT DATA GENERATION ----------------
     def generate_report_data(self):
         """Fetch detailed sales data joined with pastry info for the report."""
         con = db_connect()
@@ -870,91 +869,140 @@ class App(tk.Tk):
         }
 
     def export_reports_pdf(self):
-        from reportlab.lib import colors
-        from reportlab.lib.pagesizes import letter
-        from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-        from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Image, PageBreak
-        from reportlab.lib.units import inch
-        import os
-        from datetime import datetime
+        if not REPORTLAB_AVAILABLE:
+            messagebox.showwarning("Dependency missing", "ReportLab is required to export PDF reports.")
+            return
 
-        report_data = self.generate_report_data()
-        summary = self.generate_summary(report_data)
+        # Get date filters
+        date_from = self.rep_from.get()
+        date_to = self.rep_to.get()
 
-        EXPORTS_DIR = os.path.join(os.getcwd(), "EXPORTS")
-        os.makedirs(EXPORTS_DIR, exist_ok=True)
-        filename = os.path.join(EXPORTS_DIR, f"Sales_Report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf")
+        con = db_connect()
+        cur = con.cursor()
 
-        doc = SimpleDocTemplate(filename, pagesize=letter,
-                                leftMargin=40, rightMargin=40, topMargin=60, bottomMargin=40)
-        elements = []
-        styles = getSampleStyleSheet()
+        # Fetch filtered data (only items sold within date range)
+        cur.execute("""
+            SELECT ri.name, SUM(ri.qty) AS total_sold, SUM(ri.line_total) AS total_revenue
+            FROM receipt_items ri
+            JOIN receipts r ON ri.receipt_id = r.id
+            WHERE DATE(r.created_at) BETWEEN ? AND ?
+            GROUP BY ri.name
+            ORDER BY total_revenue DESC
+        """, (date_from, date_to))
+        rows = cur.fetchall()
 
-        # ---------------- Header ----------------
-        logo_path = os.path.join("assets", "logo.png")
-        if os.path.exists(logo_path):
-            elements.append(Image(logo_path, width=1.2*inch, height=1.2*inch))
-        elements.append(Spacer(1, 8))
+        # --- Analytics ---
+        total_sales = sum(r[2] for r in rows) if rows else 0
+        total_items = sum(r[1] for r in rows) if rows else 0
+        top_product = rows[0][0] if rows else "N/A"
 
-        styles.add(ParagraphStyle(name="HeaderTitle", fontSize=20, leading=24, textColor=colors.HexColor("#D17A22"), spaceAfter=12))
-        elements.append(Paragraph("<b>MambaMunchies Sales Report</b>", styles["HeaderTitle"]))
-        elements.append(Paragraph(datetime.now().strftime("Generated on %B %d, %Y %I:%M %p"), styles["Normal"]))
-        elements.append(Spacer(1, 12))
+        cur.execute("SELECT COUNT(*) FROM receipts WHERE DATE(created_at) BETWEEN ? AND ?", (date_from, date_to))
+        total_receipts = cur.fetchone()[0]
 
-        # ---------------- Table ----------------
-        data = [["Item", "Unit Price", "Qty", "Total", "Date", "Staff"]] + [
-            [r[0], f"₱{r[1]:.2f}", str(r[2]), f"₱{r[3]:.2f}", r[4], r[5]] for r in report_data
-        ]
+        con.close()
 
-        table = Table(data, repeatRows=1, colWidths=[120, 60, 40, 60, 110, 80])
-        table.setStyle(TableStyle([
-            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#FCEFEF")),
-            ("TEXTCOLOR", (0, 0), (-1, 0), colors.HexColor("#333333")),
-            ("ALIGN", (1, 1), (-1, -1), "CENTER"),
-            ("GRID", (0, 0), (-1, -1), 0.25, colors.grey),
-            ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-            ("FONTSIZE", (0, 0), (-1, -1), 8),
-            ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.whitesmoke, colors.HexColor("#FFF9F7")]),
-            ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+        # --- PDF setup ---
+        from reportlab.lib.pagesizes import A4
+        filename = os.path.join(EXPORTS_DIR, f"Sales_Report_{date_from}_to_{date_to}.pdf")
+        c = rl_canvas.Canvas(filename, pagesize=A4)
+        w, h = A4
+
+        # --- Background image ---
+        bg_fp = os.path.join(BASE_DIR, "background.jpg")
+        if os.path.exists(bg_fp):
+            try:
+                bg_img = rl_utils.ImageReader(bg_fp)
+                c.drawImage(bg_img, 0, 0, width=w, height=h, preserveAspectRatio=False, mask='auto')
+            except Exception as e:
+                print("Background image error:", e)
+        else:
+            c.setFillColorRGB(1, 0.9, 0.95)
+            c.rect(0, 0, w, h, fill=True, stroke=False)
+
+        # --- Watermark logo ---
+        logo_fp = os.path.join(BASE_DIR, "logo.jpg")
+        if os.path.exists(logo_fp):
+            try:
+                img = rl_utils.ImageReader(logo_fp)
+                iw, ih = img.getSize()
+                aspect = ih / iw
+                size = 120 * mm
+                c.drawImage(img, (w - size)/2, (h - size)/2, width=size, height=size*aspect, mask='auto')
+                c.setFillAlpha(0.15)
+            except Exception as e:
+                print("Watermark error:", e)
+        c.setFillAlpha(1)
+
+        # --- Header ---
+        y = h - 40
+        c.setFont("Helvetica-Bold", 18)
+        c.setFillColorRGB(0.4, 0.1, 0.2)
+        c.drawCentredString(w/2, y, "MambaMunchies Bakery")
+        y -= 20
+        c.setFont("Helvetica", 12)
+        c.drawCentredString(w/2, y, "📊 Sales Summary Report")
+        y -= 20
+        c.setFont("Helvetica", 10)
+        c.drawCentredString(w/2, y, f"Period: {date_from} to {date_to}")
+        y -= 20
+        c.setFont("Helvetica", 9)
+        c.drawCentredString(w/2, y, f"Generated on {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} by {self.username}")
+        y -= 35
+
+        # --- Table data ---
+        data = [["Product Name", "Quantity Sold", "Total Revenue"]]
+        for name, qty, revenue in rows:
+            data.append([name, str(qty), money(revenue)])
+
+        if len(data) == 1:
+            data.append(["No sales data in this period.", "", ""])
+
+        tbl = Table(data, colWidths=[90*mm, 35*mm, 45*mm])
+        tbl.setStyle(TableStyle([
+            ("BACKGROUND", (0,0), (-1,0), rl_colors.lightpink),
+            ("TEXTCOLOR", (0,0), (-1,0), rl_colors.black),
+            ("GRID", (0,0), (-1,-1), 0.25, rl_colors.grey),
+            ("FONT", (0,0), (-1,0), "Helvetica-Bold"),
+            ("FONT", (0,1), (-1,-1), "Helvetica"),
+            ("ALIGN", (1,1), (-1,-1), "RIGHT"),
         ]))
+        table_h = len(data) * 12
+        tbl.wrapOn(c, w, h)
+        tbl.drawOn(c, 40, y - table_h)
+        y -= table_h + 40
 
-        elements.append(table)
-        elements.append(Spacer(1, 16))
+        # --- Summary section ---
+        c.setFont("Helvetica-Bold", 11)
+        c.setFillColorRGB(0.3, 0.1, 0.2)
+        c.drawString(40, y, "Summary Overview")
+        y -= 16
+        c.setFont("Helvetica", 10)
+        summary_lines = [
+            ("Total Receipts", total_receipts),
+            ("Total Items Sold", total_items),
+            ("Total Sales", money(total_sales)),
+            ("Most Popular Product", top_product),
+        ]
+        for label, value in summary_lines:
+            c.drawString(60, y, f"{label}: {value}")
+            y -= 14
+        y -= 10
 
-        # ---------------- Summary ----------------
-        styles.add(ParagraphStyle(name="SummaryHeader", fontSize=14, leading=16, textColor=colors.HexColor("#D17A22"), spaceAfter=6))
-        styles.add(ParagraphStyle(name="SummaryBody", fontSize=11, leading=14, leftIndent=15))
+        # --- Footer ---
+        c.setFont("Helvetica-Oblique", 8)
+        c.setFillColor(rl_colors.grey)
+        c.drawCentredString(w/2, 25, "MambaMunchies Bakery • Confidential Report")
 
-        elements.append(Paragraph("<b>Summary</b>", styles["SummaryHeader"]))
-        elements.append(Paragraph(f"Total Items Sold: {summary['total_items']}", styles["SummaryBody"]))
-        elements.append(Paragraph(f"Total Sales: ₱{summary['total_sales']:.2f}", styles["SummaryBody"]))
-        elements.append(Paragraph(f"Most Popular Product: {summary['most_popular']}", styles["SummaryBody"]))
-        elements.append(Spacer(1, 24))
+        # Save
+        c.save()
 
-        # ---------------- QR ----------------
-        qr_path = os.path.join("assets", "qr.png")
-        if os.path.exists(qr_path):
-            elements.append(Image(qr_path, width=1*inch, height=1*inch))
-            elements.append(Spacer(1, 12))
+        messagebox.showinfo("Export Complete", f"Report exported successfully!\n\nSaved to:\n{filename}")
 
-        # Add automatic page breaks for large tables
-        if len(data) > 40:
-            elements.insert(40, PageBreak())
-
-        doc.build(elements)
-        messagebox.showinfo("Report Exported", f"Report saved to {filename}")
+        # Auto-open
         try:
-            if os.name == 'nt':
-                os.startfile(filename)
-            else:
-                subprocess.Popen(['xdg-open', filename])
+            os.startfile(filename)
         except Exception:
-            pass
-
-
-            messagebox.showinfo("Report Exported", f"Saved report to:\n{filename}")
-        except Exception as e:
-            messagebox.showerror("Export Failed", str(e))
+            subprocess.Popen(["open", filename])
 
     # ---------------- Users Tab ----------------
     def build_users_tab(self):
@@ -987,8 +1035,25 @@ class App(tk.Tk):
         uid = self.usr_tree.item(sel[0],"values")[0]
         if messagebox.askyesno("Delete","Delete this user?"):
             con = db_connect(); cur = con.cursor()
-            cur.execute("DELETE FROM users WHERE id=?",(uid,))
+            cur.execute("DELETE FROM users WHERE id=?",(uid,))  
             con.commit(); con.close(); self.load_users()
+
+# ---------------- User Form ----------------
+class UserForm(tk.Toplevel):
+    def __init__(self, master:App):
+        super().__init__(master)
+        self.title("Add User"); self.geometry("280x220")
+        self.username=tk.StringVar(); self.password=tk.StringVar(); self.role=tk.StringVar(value="Staff")
+        ttk.Label(self,text="Username:").pack(pady=4); ttk.Entry(self,textvariable=self.username).pack(fill="x",padx=6)
+        ttk.Label(self,text="Password:").pack(pady=4); ttk.Entry(self,textvariable=self.password,show="*").pack(fill="x",padx=6)
+        ttk.Label(self,text="Role:").pack(pady=4); ttk.Combobox(self,textvariable=self.role,values=["Admin","Staff"],state="readonly").pack(fill="x",padx=6)
+        ttk.Button(self,text="Save",style="Accent.TButton",command=self.save).pack(pady=8)
+
+    def save(self):
+        if not self.username.get() or not self.password.get(): return
+        con=db_connect();cur=con.cursor()
+        cur.execute("INSERT INTO users (username,password_hash,role) VALUES (?,?,?)",(self.username.get(),hash_pw(self.password.get()),self.role.get()))
+        con.commit();con.close(); self.destroy(); self.master.load_users()
 
 if __name__=="__main__":
     init_db(); LoginWindow().mainloop()

@@ -103,8 +103,8 @@ class PastryForm(tk.Toplevel):
             messagebox.showwarning("Missing Name", "Please select a pastry name.")
             self.destroy()
             return
-        if price_val < 5 or price_val > 100:
-            messagebox.showerror("Invalid Price", "Price must be between ₱5.00 and ₱100.00.")
+        if price_val < 5 or price_val > 500:
+            messagebox.showerror("Invalid Price", "Price must be between ₱5.00 and ₱500.00.")
             self.destroy()
             return
         if qty_val < 1 or qty_val > 100:
@@ -116,7 +116,6 @@ class PastryForm(tk.Toplevel):
         con = db_connect()
         cur = con.cursor()
 
-        # ✅ Check for duplicates only when adding new pastry
         if not self.pastry_id:
             cur.execute("SELECT id FROM pastries WHERE name=? COLLATE NOCASE", (name,))
             existing = cur.fetchone()

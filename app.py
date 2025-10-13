@@ -159,6 +159,49 @@ class App(tk.Tk):
         self.bind("<Control-p>", lambda e: self.charge())
         self.bind("<F5>", lambda e: self.refresh_catalog())
 
+    def show_low_stock_notification(self):
+        """Display a popup window showing products below the low stock threshold."""
+        con = db_connect()
+        cur = con.cursor()
+        cur.execute("SELECT name, quantity FROM pastries WHERE quantity < ?", (LOW_STOCK_THRESHOLD,))
+        low_stock_items = cur.fetchall()
+        con.close()
+
+        if not low_stock_items:
+            return  # nothing to show
+
+        # Create popup window
+        notif = tk.Toplevel(self)
+        notif.title("⚠️ Low Stock Alert")
+        notif.geometry("380x300")
+        notif.resizable(False, False)
+        notif.configure(bg="#fff4f4")
+
+        ttk.Label(notif, text="⚠️ Low Stock Warning", font=("Segoe UI", 13, "bold"), foreground="#8a1c1c").pack(pady=10)
+
+        frame = ttk.Frame(notif)
+        frame.pack(fill="both", expand=True, padx=15, pady=10)
+
+        tree = ttk.Treeview(frame, columns=("Item", "Qty"), show="headings", height=8)
+        tree.heading("Item", text="Item")
+        tree.heading("Qty", text="Qty")
+        tree.column("Item", width=200)
+        tree.column("Qty", width=80, anchor="center")
+        tree.pack(fill="both", expand=True)
+
+        # Insert rows
+        for name, qty in low_stock_items:
+            tree.insert("", "end", values=(name, qty))
+
+        ttk.Button(
+            notif, text="OK", style="Accent.TButton", command=notif.destroy
+        ).pack(pady=10)
+
+        # Make popup appear on top of main window
+        notif.transient(self)
+        notif.grab_set()
+        self.wait_window(notif)
+
     def add_pastry(self):
         PastryForm(self, None)
 
@@ -233,7 +276,7 @@ class App(tk.Tk):
         cart_box.pack(fill="y", padx=2, pady=2)
 
         cols = ("Item", "Price", "Qty", "Total")
-        self.cart_tree = ttk.Treeview(cart_box, columns=cols, show="headings", height=12)
+        self.cart_tree = ttk.Treeview(cart_box, columns=cols, show="headings", height=8)
         for c in cols:
             self.cart_tree.heading(c, text=c)
         self.cart_tree.column("Item", width=180)
@@ -562,6 +605,9 @@ class App(tk.Tk):
         self.load_inventory()
         self.refresh_catalog()
         self.refresh_reports()
+                # Check low stock on login
+        if self.role in ("Admin", "Staff"):
+            self.after(1000, self.show_low_stock_notification)
         self.clear_cart()
         messagebox.showinfo("Payment complete", f"Receipt #{receipt_no}\nChange: {money(change)}")
 
